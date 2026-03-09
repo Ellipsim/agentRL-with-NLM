@@ -18,12 +18,46 @@ pip install -r requirements.txt
 
 ## Usage
 ```bash
-# Run tests
-pytest tests/ -v
+python -m src.agent.controller.train_and_test \
+  --domain-path data/domains/blocksworld.pddl \
+  --train-problems-dir data/problems/train \
+  --val-problems-dir data/problems/val \
+  --test-problems-dir data/problems/test \
+  --steps 100 \
+  --policy-type PPO \
+  --device gpu
+```
 
-# Run specific test category
-pytest -m ppo -v
-pytest -m loading -v
+## **Key Arguments:**
+```
+Domain & Problems:
+  --domain-path           Path to domain.pddl
+  --train-problems-dir    Training problems folder
+  --val-problems-dir      Validation problems folder
+  --test-problems-dir     Test problems folder
+
+Training:
+  --steps                 Number of iterations (default: 100)
+  --num-problems-train    Problems per iteration (default: 5)
+  --max-actions-train     Action budget (default: 50)
+  --batch-size            PPO batch size (default: 32)
+  --solve-PPO-epochs      PPO epochs (default: 3)
+
+Validation:
+  --val-period            Steps between validation (default: 10)
+  --num-problems-val      Val problems per epoch (default: 10)
+
+Testing:
+  --num-problems-test     Test problems (default: 20)
+
+Modes:
+  --train-mode            skip/supersede/resume (default: resume)
+  --test-mode             skip/supersede/missing (default: missing)
+
+Rewards:
+  --reward-goal-reached   Goal bonus (default: 1.0)
+  --reward-step           Step penalty (default: -0.01)
+  --reward-efficiency     Efficiency weight (default: 0.5)
 ```
 
 ## Project Structure
