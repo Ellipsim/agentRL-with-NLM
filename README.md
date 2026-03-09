@@ -1,4 +1,3 @@
-cat > README.md << 'EOF'
 # AgentRL - PDDL Solver with PPO
 
 A reinforcement learning agent for solving PDDL planning problems using PPO (Proximal Policy Optimization).
