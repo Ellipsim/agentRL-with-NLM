@@ -1,0 +1,16 @@
+[tool.pytest.ini_options]
+addopts = "-v --tb=short"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+
+markers = [
+    "loading: tests for problem loading and basic structure",
+    "state: tests for problem state and properties",
+    "actions: tests for applicable actions",
+    "solving: tests for action execution, reset, and deep copy",
+    "solver_random: tests for ProblemSolver with random policy",
+    "ppo: tests for ppo policy",
+]

@@ -1,0 +1,7 @@
+cat > requirements.txt << 'EOF'
+torch>=2.1
+pytorch-lightning>=1.5.0
+pytest>=8.0.0
+lifted-pddl>=0.1.0
+numpy>=1.19.0
+EOF
