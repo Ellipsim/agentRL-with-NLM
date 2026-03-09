@@ -50,3 +50,9 @@ Thumbs.db
 *.pth
 *.ckpt
 EOF
+
+# Claude
+.claude
+
+# Experiments
+experiments/*

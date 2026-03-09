@@ -229,14 +229,6 @@ class TestSolverRandomPolicy:
         for step in trajectories[0]:
             assert step['action_log_prob'] is not None
 
-    def test_reward_placeholder_is_zero(self, solver, parser, problem_file):
-        """Test that reward placeholder is initialized to zero."""
-        problem = PDDLProblem.load_from_pddl(parser, problem_file, max_actions=50)
-        _, _, trajectories, _ = solver.solve_problems([problem], list_max_actions=50)
-        
-        for step in trajectories[0]:
-            assert step['reward'] == 0
-
     def test_state_snapshots_are_independent(self, solver, parser, problem_file):
         """Test that state snapshots in trajectory are independent copies."""
         problem = PDDLProblem.load_from_pddl(parser, problem_file, max_actions=50)

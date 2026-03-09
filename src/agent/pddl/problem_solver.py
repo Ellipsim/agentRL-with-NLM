@@ -23,7 +23,7 @@ from lifted_pddl import Parser
 from src.agent.learning.generative_policy import GenerativePolicy
 from src.agent.pddl.pddl_problem import PDDLProblem
 
-#TODO: Metrics
+#TODO: Revisar que funcionan correctamente y comparar con NeSIG
 
 class ProblemSolver:
     """
@@ -40,7 +40,10 @@ class ProblemSolver:
         solved, info, trajectories, elapsed = solver.solve_problems(problems, max_actions=50)
     """
 
-    def __init__(self, parser: Parser, policy: GenerativePolicy):
+    def __init__(self, parser: Parser, policy: GenerativePolicy,
+                 reward_goal_reached: float = 1.0,
+                 reward_step: float = -0.01,
+                 reward_efficiency: float = 0.5):
         """
         Parameters
         ----------
@@ -54,6 +57,11 @@ class ProblemSolver:
         """
         self.parser = parser
         self.policy = policy
+
+        # Reward configuration
+        self.reward_goal_reached = reward_goal_reached
+        self.reward_step = reward_step
+        self.reward_efficiency = reward_efficiency
 
     # ------------------------------------------------------------------
     # Core solve loop
@@ -149,6 +157,50 @@ class ProblemSolver:
         return trajectories, is_solved
 
     # ------------------------------------------------------------------
+    # Reward Calculation
+    # ------------------------------------------------------------------
+
+    def _calculate_trajectory_rewards(self, trajectory: List[Dict], goal_reached: bool, 
+                                      num_steps: int) -> List[Dict]:
+        """
+        Calculate and assign rewards to trajectory samples.
+        
+        Similar to how NeSIG assigns consistency_reward, difficulty_reward, diversity_reward
+        to each sample, we assign step_penalty + goal_bonus + efficiency_bonus.
+        
+        Parameters
+        ----------
+        trajectory : List[Dict]
+            Trajectory samples
+        goal_reached : bool
+            Whether goal was reached
+        num_steps : int
+            Number of steps taken
+        
+        Returns
+        -------
+        trajectory : List[Dict]
+            Trajectory with 'reward' field populated for each sample
+        """
+        for i, sample in enumerate(trajectory):
+            is_last_step = (i == len(trajectory) - 1)
+            
+            # Base reward: penalty for each step
+            reward = self.reward_step
+            
+            # Goal bonus: only at last step if goal reached
+            if is_last_step and goal_reached:
+                reward += self.reward_goal_reached
+                
+                # Efficiency bonus: reward shorter plans
+                efficiency_bonus = self.reward_efficiency / (1.0 + 0.1 * num_steps)
+                reward += efficiency_bonus
+            
+            sample['reward'] = reward
+        
+        return trajectory
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -160,10 +212,11 @@ class ProblemSolver:
         """
         Attempt to solve a batch of PDDL problems using ``self.policy``.
 
-        Each problem in ``problems`` must already be a fully-initialised
-        ``PDDLProblem`` (loaded via ``PDDLProblem.load_from_pddl``
-        or constructed manually).  Problems are reset before solving, so this
-        method is safe to call multiple times on the same list.
+        Follows NeSIG's pattern:
+        1. Collect trajectories by solving problems
+        2. Evaluate problem metrics (success, efficiency, etc.)
+        3. Assign rewards to trajectory samples
+        4. Return enriched data
 
         Parameters
         ----------
@@ -178,30 +231,30 @@ class ProblemSolver:
         is_solved
             ``is_solved[i]`` is True iff problem ``i`` reached its goal.
         problem_info_list
-            One dict per problem with the keys:
-
-            - ``"num_steps"``: number of actions applied before termination.
-            - ``"max_actions"``: the budget that was used.
-            - ``"goal_reached"``: same as ``is_solved[i]``.
-            - ``"action_history"``: the ordered list of applied actions.
-            - ``"num_objects"``: dict mapping type-name → count.
-            - ``"num_goal_atoms"``: number of atoms in the goal.
+            One dict per problem with keys:
+            - ``"num_steps"``: number of actions applied
+            - ``"max_actions"``: the budget used
+            - ``"goal_reached"``: same as ``is_solved[i]``
+            - ``"success"``: alias for goal_reached
+            - ``"efficiency"``: float in [0, 1] (1.0 if efficient, 0.0 if failed)
+            - ``"solution_ratio"``: steps / max_actions
+            - ``"action_history"``: ordered list of actions
+            - ``"num_objects"``: dict mapping type-name → count
+            - ``"num_goal_atoms"``: number of goal atoms
 
         trajectories
             ``trajectories[i]`` is the list of step-dicts for problem ``i``.
             Each step-dict contains:
-
-            - ``"state"``: ``PDDLState`` snapshot *before* the action.
-            - ``"internal_state"``: policy's internal representation.
-            - ``"applicable_actions"``: tuple of legal ground actions.
-            - ``"chosen_action"``: the action that was applied.
-            - ``"chosen_action_ind"``: index of the action in ``applicable_actions``.
-            - ``"action_log_prob"``: log-probability from the policy.
-            - ``"reward"``: placeholder (0); populate with shaped reward downstream.
+            - ``"state"``: ``PDDLState`` snapshot *before* the action
+            - ``"internal_state"``: policy's internal representation
+            - ``"applicable_actions"``: tuple of legal ground actions
+            - ``"chosen_action"``: the action that was applied
+            - ``"chosen_action_ind"``: index of the action
+            - ``"action_log_prob"``: log-probability from the policy
+            - ``"reward"``: shaped reward (calculated by this method)
 
         elapsed
-            Wall-clock time (seconds) for the entire solve pass, excluding
-            any post-hoc analysis.
+            Wall-clock time (seconds) for the entire solve pass.
         """
         assert len(problems) > 0, "problems must be a non-empty list"
 
@@ -210,19 +263,22 @@ class ProblemSolver:
         # Normalise budget to a per-problem list.
         if isinstance(list_max_actions, int):
             list_max_actions = (list_max_actions,) * num_problems
-        assert len(list_max_actions) == num_problems, ("list_max_actions must be an int or a sequence of length num_problems")
+        assert len(list_max_actions) == num_problems, (
+            "list_max_actions must be an int or a sequence of length num_problems"
+        )
 
-        # Reset every problem to its initial state so solve_problems idempotent when called multiple times on the same list.
-        for p in problems : 
+        # Reset every problem to its initial state (idempotent)
+        for p in problems:
             p.reset()
 
         start_time = time.time()
 
+        # ---- Solve and collect trajectories ----
         trajectories, is_solved = self._solve_trajectories(problems, list(list_max_actions))
 
         elapsed = time.time() - start_time
 
-        # Build per-problem summary dicts.
+        # ---- Build per-problem info and assign rewards ----
         problem_info_list = []
         for i, problem in enumerate(problems):
             obj_types = problem.initial_state.types
@@ -230,15 +286,37 @@ class ProblemSolver:
             for t in set(obj_types):
                 num_objects[t] = obj_types.count(t)
 
-            problem_info_list.append(
-                {
-                    "num_steps": problem.num_actions_executed,
-                    "max_actions": list_max_actions[i],
-                    "goal_reached": is_solved[i],
-                    "action_history": problem.action_history,
-                    "num_objects": num_objects,
-                    "num_goal_atoms": len(problem.goal) if problem.goal else 0,
-                }
+            goal_reached = is_solved[i]
+            num_steps = problem.num_actions_executed
+
+            # TODO: Revisar estas medidas, solution-ratio es inverso de efficiency y son un poco cutres
+            # Calculate problem-level metrics (like NeSIG's problem info)
+            if goal_reached:
+                efficiency = 1.0 - (num_steps / list_max_actions[i]) if list_max_actions[i] > 0 else 1.0
+                solution_ratio = num_steps / list_max_actions[i] if list_max_actions[i] > 0 else 0.0
+            else:
+                efficiency = 0.0
+                solution_ratio = 1.0 if num_steps == list_max_actions[i] else 0.0
+
+            problem_info = {
+                "num_steps": num_steps,
+                "max_actions": list_max_actions[i],
+                "goal_reached": goal_reached,
+                "success": goal_reached,  # NOTE: Alias 
+                "efficiency": efficiency,
+                "solution_ratio": solution_ratio,
+                "action_history": problem.action_history,
+                "num_objects": num_objects,
+                "num_goal_atoms": len(problem.goal) if problem.goal else 0,
+            }
+
+            # ---- Calculate rewards for this problem's trajectory ----
+            trajectories[i] = self._calculate_trajectory_rewards(
+                trajectories[i],
+                goal_reached,
+                num_steps
             )
+
+            problem_info_list.append(problem_info)
 
         return is_solved, problem_info_list, trajectories, elapsed
