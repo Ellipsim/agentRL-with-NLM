@@ -117,10 +117,6 @@ def parse_arguments():
         help="Minibatch size during PPO training"
     )
     parser.add_argument(
-        '--solve-PPO-epochs', type=int, default=3,
-        help="PPO epochs per training step"
-    )
-    parser.add_argument(
         '--min-samples-train', type=int, default=10,
         help="Min samples needed to perform PPO update"
     )
@@ -215,41 +211,19 @@ def parse_arguments():
         help="Weight for efficiency bonus"
     )
 
-    # ---- NLM model (if using PPO) ----
-    parser.add_argument(
-        '--nlm-hidden-size', type=int, default=128,
-        help="Hidden size for NLM model"
-    )
-    parser.add_argument(
-        '--nlm-num-layers', type=int, default=2,
-        help="Number of layers in NLM model"
-    )
+    # ---- NLM Model Specific Arguments ----
+    # Register all NLM-specific arguments (breadth, depth, hidden-features, etc.)
+    NLMWrapperActor.add_model_specific_args(parser)
 
-    # ---- PPO Solver Policy hyperparameters ----
-    parser.add_argument(
-        '--solve-lr', type=float, default=1e-3,
-        help="Learning rate for solver policy"
-    )
-    parser.add_argument(
-        '--solve-epsilon', type=float, default=0.2,
-        help="PPO epsilon clipping parameter"
-    )
-    parser.add_argument(
-        '--solve-entropy-coeffs', type=PPOSolverPolicy.parse_entropy_coeffs, default=0.0,
-        help="Entropy coefficient (single float or 3 floats: init,final,steps)"
-    )
-    parser.add_argument(
-        '--solve-lifted-entropy-weight', type=float, default=0.5,
-        help="Weight for lifted entropy vs ground entropy"
-    )
-    parser.add_argument(
-        '--weight-decay', type=float, default=0.0,
-        help="Weight decay for optimizer"
-    )
+    # ---- Critic loss weight (not in add_model_specific_args) ----
     parser.add_argument(
         '--critic-loss-weight', type=float, default=0.1,
         help="Weight for critic loss vs actor loss"
     )
+
+    # ---- Add policy-specific arguments ----
+    # This registers all --solve-* arguments for PPOSolverPolicy
+    PPOSolverPolicy.add_model_specific_args(parser)
 
     args = parser.parse_args()
     return args
@@ -349,7 +323,6 @@ def load_problems_from_dir(problem_dir, domain_path, num_problems):
     for i in range(num_problems):
         problem_file = problem_files[i % len(problem_files)]
         # Create a fresh parser for each problem to avoid duplicate constant errors
-        from lifted_pddl import Parser
         fresh_parser = Parser()
         fresh_parser.parse_domain(str(domain_path))
         
@@ -373,13 +346,16 @@ def create_policy(args, parser, last_train_it, experiment_folder_path, device):
         # Create actor/critic for solver
         dummy_state = PDDLState(parser.types, parser.type_hierarchy, parser.predicates)
         
+        # Convert args to dict for NLMWrapper (it expects dict with specific keys)
+        args_dict = vars(args)
+        
         actor_args = {'dummy_pddl_state': dummy_state}
         critic_args = {'dummy_pddl_state': dummy_state}
         
         # Load or create policy
         if args.train_mode == "supersede" or last_train_it == 0:
             policy = PPOSolverPolicy(
-                args=args,
+                args=args_dict,  # Pass as dict
                 actor_class=NLMWrapperActor,
                 actor_arguments=actor_args,
                 critic_class=NLMWrapperCritic,
@@ -390,7 +366,7 @@ def create_policy(args, parser, last_train_it, experiment_folder_path, device):
             ckpt_path = experiment_folder_path / CKPTS_FOLDER_NAME / 'last.ckpt'
             policy = PPOSolverPolicy.load_from_checkpoint(
                 ckpt_path,
-                args=args,
+                args=args_dict,  # Pass as dict
                 actor_class=NLMWrapperActor,
                 actor_arguments=actor_args,
                 critic_class=NLMWrapperCritic,
@@ -515,10 +491,13 @@ def test(args, parser, experiment_id, experiment_folder_path):
         actor_args = {'dummy_pddl_state': dummy_state}
         critic_args = {'dummy_pddl_state': dummy_state}
         
+        # Convert args to dict
+        args_dict = vars(args)
+        
         ckpt_path = experiment_folder_path / CKPTS_FOLDER_NAME / 'best.ckpt'
         policy = PPOSolverPolicy.load_from_checkpoint(
             ckpt_path,
-            args=args,
+            args=args_dict,  # Pass as dict
             actor_class=NLMWrapperActor,
             actor_arguments=actor_args,
             critic_class=NLMWrapperCritic,

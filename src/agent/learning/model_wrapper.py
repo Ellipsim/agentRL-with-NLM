@@ -262,10 +262,6 @@ class NLMWrapperActor(NLMWrapper):
         for action_list in applicable_actions_list:
             assert len(action_list)>0, f"A problem has no applicable actions!"
 
-        print("expected:", PDDLProblem)
-        print("received:", type(problems[0]))
-        print("same class?", type(problems[0]) is PDDLProblem)
-
         if isinstance(problems[0], PDDLProblem):
             internal_state_list = self.obtain_internal_state_encodings(problems)
         elif isinstance(problems[0], tuple):
