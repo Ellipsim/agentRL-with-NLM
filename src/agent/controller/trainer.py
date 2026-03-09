@@ -244,7 +244,7 @@ class PolicyTrainer:
                 enable_checkpointing=False,
                 gradient_clip_val=grad_clip,
                 logger=logger,
-                enable_progress_bar=False,
+                enable_progress_bar=True,
             )
         else:
             trainer = pl.Trainer(
@@ -254,7 +254,7 @@ class PolicyTrainer:
                 enable_checkpointing=False,
                 gradient_clip_val=grad_clip,
                 logger=logger,
-                enable_progress_bar=False,
+                enable_progress_bar=True,
             )
 
         trainer.fit(self.policy, dataloader)

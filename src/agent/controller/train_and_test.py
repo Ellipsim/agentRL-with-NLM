@@ -311,7 +311,7 @@ def read_experiment_info(experiment_info_path):
 # Problem Loading
 # =====================================================================
 
-def load_problems_from_dir(problem_dir, domain_path, num_problems):
+def load_problems_from_dir(problem_dir, domain_path, num_problems, max_actions=None):
     """Load problems from directory with fresh parser for each problem."""
     problem_dir = Path(problem_dir)
     problem_files = sorted(problem_dir.glob("*.pddl"))
@@ -328,6 +328,12 @@ def load_problems_from_dir(problem_dir, domain_path, num_problems):
         
         problem = PDDLProblem.load_from_pddl(fresh_parser, str(problem_file))
         if problem is not None:
+            # Set max_actions if provided
+            if max_actions is not None:
+                if isinstance(max_actions, tuple):
+                    problem.max_actions = max_actions[i % len(max_actions)]
+                else:
+                    problem.max_actions = max_actions
             problems.append(problem)
     
     return problems
@@ -337,6 +343,8 @@ def load_problems_from_dir(problem_dir, domain_path, num_problems):
 # Policy Creation
 # =====================================================================
 
+# TODO: Es correcto tener las max action aquí?
+
 def create_policy(args, parser, last_train_it, experiment_folder_path, device):
     """Create or load policy."""
     if args.policy_type == 'random':
@@ -344,7 +352,19 @@ def create_policy(args, parser, last_train_it, experiment_folder_path, device):
     
     elif args.policy_type == 'PPO':
         # Create actor/critic for solver
-        dummy_state = PDDLState(parser.types, parser.type_hierarchy, parser.predicates)
+        # NLM needs actions to be treated as predicates (NeSIG legacy)
+        # TODO: Is there a better way to do this?
+        domain_actions = set([
+        (action[0], tuple([var for var, var_class in zip(action[1][0], action[1][1]) if var_class=='param']))
+        for action in parser.actions])
+
+        dummy_state = PDDLState(
+            types=parser.types,
+            type_hierarchy=parser.type_hierarchy,
+            predicates=domain_actions,  # Actions as predicates!
+            objects=[],
+            atoms=set()
+        )
         
         # Convert args to dict for NLMWrapper (it expects dict with specific keys)
         args_dict = vars(args)
@@ -436,10 +456,20 @@ def train_and_val(args, parser, experiment_id, experiment_folder_path):
     
     # Define problem loading functions
     def get_train_problems():
-        return load_problems_from_dir(args.train_problems_dir, args.domain_path, args.num_problems_train)
+        return load_problems_from_dir(
+            args.train_problems_dir, 
+            args.domain_path, 
+            args.num_problems_train,
+            max_actions=args.max_actions_train
+        )
     
     def get_val_problems():
-        return load_problems_from_dir(args.val_problems_dir, args.domain_path, args.num_problems_val)
+        return load_problems_from_dir(
+            args.val_problems_dir, 
+            args.domain_path, 
+            args.num_problems_val,
+            max_actions=args.max_actions_val
+        )
     
     # Train
     best_train_it, last_train_it = trainer.train_and_val(
@@ -486,7 +516,19 @@ def test(args, parser, experiment_id, experiment_folder_path):
     if args.policy_type == 'random':
         policy = RandomPolicy()
     else:
-        dummy_state = PDDLState(parser.types, parser.type_hierarchy, parser.predicates)
+        # NLM needs actions to be treated as predicates (NeSIG legacy)
+        # TODO: Is there a better way to do this?
+        domain_actions = set([
+        (action[0], tuple([var for var, var_class in zip(action[1][0], action[1][1]) if var_class=='param']))
+        for action in parser.actions])
+
+        dummy_state = PDDLState(
+            types=parser.types,
+            type_hierarchy=parser.type_hierarchy,
+            predicates=domain_actions,  # Actions as predicates!
+            objects=[],
+            atoms=set()
+        )
         
         actor_args = {'dummy_pddl_state': dummy_state}
         critic_args = {'dummy_pddl_state': dummy_state}
@@ -519,7 +561,12 @@ def test(args, parser, experiment_id, experiment_folder_path):
     
     # Define test problem loading
     def get_test_problems():
-        return load_problems_from_dir(args.test_problems_dir, args.domain_path, args.num_problems_test)
+        return load_problems_from_dir(
+            args.test_problems_dir, 
+            args.domain_path, 
+            args.num_problems_test,
+            max_actions=args.max_actions_test
+        )
     
     # Test
     trainer.test(test_problems_fn=get_test_problems)
