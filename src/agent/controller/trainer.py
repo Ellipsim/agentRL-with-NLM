@@ -145,7 +145,6 @@ class PolicyTrainer:
                 reward = trajectories[i][j]['reward']
                 return_curr_state = reward + self.args.disc_factor * return_curr_state
 
-                trajectories[i][j]['total_reward'] = reward  # r_t
                 trajectories[i][j]['return'] = return_curr_state  # R_t
 
     def _calculate_advantage_trajectories(self, policy: GenerativePolicy,
@@ -165,13 +164,13 @@ class PolicyTrainer:
                 state_values = [v.item() for v in state_values]  # Store as list of floats
 
                 # Calculate advantage using GAE
-                advantage_curr_state = trajectories[i][-1]['total_reward'] - state_values[-1]
+                advantage_curr_state = trajectories[i][-1]['reward'] - state_values[-1] # A_final = r_final - V(s_final)
                 trajectories[i][-1]['advantage'] = advantage_curr_state
                 trajectories[i][-1]['state_value'] = state_values[-1]
 
                 for j in range(len(trajectories[i]) - 2, -1, -1):
                     # delta_t = r_t + gamma*V(s_{t+1}) - V(s_t)
-                    delta_curr_state = (trajectories[i][j]['total_reward'] + 
+                    delta_curr_state = (trajectories[i][j]['reward'] + 
                                        self.args.disc_factor * state_values[j + 1] - 
                                        state_values[j])
                     # A_t = delta_t + (gamma*lambda)*A_{t+1}
