@@ -147,6 +147,24 @@ class PolicyTrainer:
 
                 trajectories[i][j]['return'] = return_curr_state  # R_t
 
+
+    """
+    TODO
+    2. GAE final step calculation looks off
+    In _calculate_advantage_trajectories, the final timestep advantage is computed as:
+    pythonadvantage_curr_state = trajectories[i][-1]['reward'] - state_values[-1]
+    This is A_T = r_T - V(s_T). But the standard GAE formula for the last step should be 
+    δ_T = r_T + γ·V(s_{T+1}) - V(s_T), where V(s_{T+1}) = 0 if the episode is done 
+    (goal reached or budget exhausted). So it should be r_T + 0 - V(s_T) = r_T - V(s_T), 
+    which matches what you have only if every trajectory ends in a terminal state. If a 
+    trajectory can be truncated (hit max actions without solving), then V(s_{T+1}) is not 
+    zero — it's the value of the state you stopped at. You'd need to bootstrap with 
+    V(s_{T+1}) in that case. Check whether your truncated trajectories are being handled 
+    correctly here.
+
+    """
+
+
     def _calculate_advantage_trajectories(self, policy: GenerativePolicy,
                                          trajectories: List[List[Dict]]) -> None:
         """
@@ -179,6 +197,8 @@ class PolicyTrainer:
                                            advantage_curr_state)
                     trajectories[i][j]['advantage'] = advantage_curr_state
                     trajectories[i][j]['state_value'] = state_values[j]
+
+    #TODO: Mayube is need normalization
 
     def _process_trajectories(self, trajectories: List[List[Dict]]) -> List[Dict]:
         """
@@ -265,6 +285,8 @@ class PolicyTrainer:
     # =====================================================================
     # Checkpointing (from NeSIG)
     # =====================================================================
+
+    # TODO: There better ways to do this
 
     def save_checkpoint(self, model: pl.LightningModule, ckpt_path: Path) -> None:
         """Save checkpoint using PyTorch Lightning."""
@@ -431,6 +453,8 @@ class PolicyTrainer:
     # =====================================================================
     # Main Training Loop (adapted from NeSIG)
     # =====================================================================
+
+    # TODO: Validation should take into account efficiency
 
     def train_and_val(self, start_it: int, end_it: int, 
                       train_problems_fn, val_problems_fn) -> Tuple[int, int]:
