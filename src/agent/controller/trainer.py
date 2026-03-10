@@ -74,6 +74,13 @@ class PolicyTrainer:
         # Obtain the corresponding torch.device from the args.device string
         self.device = device
 
+        # Persistent TensorBoard writers
+        self.writers = {
+            'train': SummaryWriter(log_dir=self.logs_folder / 'train'),
+            'val': SummaryWriter(log_dir=self.logs_folder / 'val'),
+            'test': SummaryWriter(log_dir=self.logs_folder / 'test'),
+        }
+
     # =====================================================================
     # Trajectory Collection (from provided problems)
     # =====================================================================
@@ -278,6 +285,7 @@ class PolicyTrainer:
                 gradient_clip_val=grad_clip,
                 logger=logger,
                 enable_progress_bar=True,
+                log_every_n_steps=1,
             )
         else:
             trainer = pl.Trainer(
@@ -288,6 +296,7 @@ class PolicyTrainer:
                 gradient_clip_val=grad_clip,
                 logger=logger,
                 enable_progress_bar=True,
+                log_every_n_steps=1,
             )
 
         trainer.fit(self.policy, dataloader)
@@ -357,7 +366,7 @@ class PolicyTrainer:
         """
         assert phase in {'train', 'val', 'test'}, "phase must be 'train', 'val' or 'test'"
 
-        writer = SummaryWriter(log_dir=self.logs_folder / phase)
+        writer = self.writers[phase]
         log_dict = dict()
 
         # ---- Problem metrics ----
@@ -430,8 +439,13 @@ class PolicyTrainer:
             log_dict['Allocated Memory (MB)'] = mem_allocated
             writer.add_scalar('Allocated Memory (MB)', mem_allocated, global_step=x_value)
 
-        writer.close()
         return log_dict
+
+
+    def close_writers(self):
+        """Close TensorBoard writers."""
+        for w in self.writers.values():
+            w.close()
 
     # =====================================================================
     # Validation (adapted from NeSIG)
@@ -484,8 +498,6 @@ class PolicyTrainer:
     # =====================================================================
     # Main Training Loop (adapted from NeSIG)
     # =====================================================================
-
-    # TODO: Validation should take into account efficiency
 
     def train_and_val(self, start_it: int, end_it: int, 
                       train_problems_fn, val_problems_fn) -> Tuple[int, int]:
@@ -576,7 +588,8 @@ class PolicyTrainer:
         print(f"  Last iteration: {last_train_it}")
         print(f"{'='*70}\n")
 
-        return best_train_it, last_train_it
+        self.close_writers()
+        return best_train_it, last_train_it, best_val_score
 
     # =====================================================================
     # Testing (adapted from NeSIG)
@@ -637,6 +650,7 @@ class PolicyTrainer:
             # Log test metrics
             self.log_metrics('test', 0, test_problem_info)
 
+        self.close_writers()
         print(f"\n{'='*70}")
         print(f"Testing Complete!")
         print(f"{'='*70}\n")

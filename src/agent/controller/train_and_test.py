@@ -474,7 +474,7 @@ def train_and_val(args, parser, experiment_id, experiment_folder_path):
         )
     
     # Train
-    best_train_it, last_train_it = trainer.train_and_val(
+    best_train_it, last_train_it, best_val_score = trainer.train_and_val(
         start_it=last_train_it + 1,
         end_it=args.steps,
         train_problems_fn=get_train_problems,
