@@ -302,6 +302,7 @@ class ProblemSolver:
                 "num_steps": num_steps,
                 "max_actions": list_max_actions[i],
                 "goal_reached": goal_reached,
+                "truncated": not goal_reached,
                 "success": goal_reached,  # NOTE: Alias 
                 "efficiency": efficiency,
                 "solution_ratio": solution_ratio,

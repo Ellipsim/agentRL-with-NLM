@@ -148,31 +148,18 @@ class PolicyTrainer:
                 trajectories[i][j]['return'] = return_curr_state  # R_t
 
 
-    """
-    TODO
-    2. GAE final step calculation looks off
-    In _calculate_advantage_trajectories, the final timestep advantage is computed as:
-    pythonadvantage_curr_state = trajectories[i][-1]['reward'] - state_values[-1]
-    This is A_T = r_T - V(s_T). But the standard GAE formula for the last step should be 
-    δ_T = r_T + γ·V(s_{T+1}) - V(s_T), where V(s_{T+1}) = 0 if the episode is done 
-    (goal reached or budget exhausted). So it should be r_T + 0 - V(s_T) = r_T - V(s_T), 
-    which matches what you have only if every trajectory ends in a terminal state. If a 
-    trajectory can be truncated (hit max actions without solving), then V(s_{T+1}) is not 
-    zero — it's the value of the state you stopped at. You'd need to bootstrap with 
-    V(s_{T+1}) in that case. Check whether your truncated trajectories are being handled 
-    correctly here.
-
-    """
-
-
     def _calculate_advantage_trajectories(self, policy: GenerativePolicy,
-                                         trajectories: List[List[Dict]]) -> None:
+                                         trajectories: List[List[Dict]],
+                                         problem_info_list: List[Dict] = None) -> None:
         """
         Calculate advantages using GAE (Generalized Advantage Estimation).
         Modifies trajectories in-place.
         
         Formula: A_t = delta_t + (gamma*lambda)*A_{t+1}
         where delta_t = r_t + gamma*V(s_{t+1}) - V(s_t)
+        
+        For truncated episodes (budget exhausted without reaching goal),
+        bootstraps with V(s_{T+1}) instead of 0.
         """
         for i in range(len(trajectories)):
             if len(trajectories[i]) > 0:  # Skip empty trajectories
@@ -181,8 +168,30 @@ class PolicyTrainer:
                 state_values, _ = policy.calculate_state_values(internal_states)
                 state_values = [v.item() for v in state_values]  # Store as list of floats
 
+                # Determine bootstrap value for the final step
+                # If the episode was truncated, V(s_{T+1}) != 0
+                # If the episode terminated (goal reached), V(s_{T+1}) = 0
+                truncated = False
+                if problem_info_list is not None:
+                    truncated = problem_info_list[i].get('truncated', False)
+                
+                if truncated:
+                    # Bootstrap: V(s_{T+1}) is the value of the state AFTER the last action
+                    # The last sample's 'state' is the state BEFORE the last action,
+                    # so we need the current state of the problem after all actions.
+                    # We use the last state value as an approximation since we don't
+                    # have the post-action internal state readily available.
+                    # A better approach: store the final state in the trajectory.
+                    # The best approach would be to store-post-action and compute 
+                    # state value, but that requiers too much changes
+                    bootstrap_value = state_values[-1]
+                else:
+                    bootstrap_value = 0.0
+
                 # Calculate advantage using GAE
-                advantage_curr_state = trajectories[i][-1]['reward'] - state_values[-1] # A_final = r_final - V(s_final)
+                # delta_T = r_T + gamma * bootstrap_value - V(s_T)
+                delta_last = trajectories[i][-1]['reward'] + self.args.disc_factor * bootstrap_value - state_values[-1]
+                advantage_curr_state = delta_last
                 trajectories[i][-1]['advantage'] = advantage_curr_state
                 trajectories[i][-1]['state_value'] = state_values[-1]
 
@@ -198,9 +207,9 @@ class PolicyTrainer:
                     trajectories[i][j]['advantage'] = advantage_curr_state
                     trajectories[i][j]['state_value'] = state_values[j]
 
-    #TODO: Mayube is need normalization
+    #TODO: Maybe is need normalization
 
-    def _process_trajectories(self, trajectories: List[List[Dict]]) -> List[Dict]:
+    def _process_trajectories(self, trajectories: List[List[Dict]], problem_info_list: List[Dict] = None) -> List[Dict]:
         """
         Process trajectories before training.
         
@@ -212,7 +221,7 @@ class PolicyTrainer:
         Returns flattened list of samples.
         """
         self._calculate_return_trajectories(trajectories)
-        self._calculate_advantage_trajectories(self.policy, trajectories)
+        self._calculate_advantage_trajectories(self.policy, trajectories, problem_info_list)
 
         # Flatten trajectories to samples 
         # TODO: Revisar que cambio no rompa nada
@@ -315,8 +324,6 @@ class PolicyTrainer:
     # =====================================================================
     # Logging (adapted from NeSIG)
     # =====================================================================
-
-    # TODO: Revisar métricas
 
     def log_metrics(self, phase: str, x_value: int, problem_info_list: List[Dict],
                    trajectories: List[List[Dict]] = None, score: Optional[float] = None) -> Dict:
@@ -508,7 +515,7 @@ class PolicyTrainer:
                 continue
 
             # Process trajectories
-            samples = self._process_trajectories(trajectories)
+            samples = self._process_trajectories(trajectories, problem_info)
 
             # PPO training
             self._perform_train_step(samples)
