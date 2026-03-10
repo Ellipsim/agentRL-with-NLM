@@ -207,8 +207,6 @@ class PolicyTrainer:
                     trajectories[i][j]['advantage'] = advantage_curr_state
                     trajectories[i][j]['state_value'] = state_values[j]
 
-    #TODO: Maybe is need normalization
-
     def _process_trajectories(self, trajectories: List[List[Dict]], problem_info_list: List[Dict] = None) -> List[Dict]:
         """
         Process trajectories before training.
@@ -224,10 +222,17 @@ class PolicyTrainer:
         self._calculate_advantage_trajectories(self.policy, trajectories, problem_info_list)
 
         # Flatten trajectories to samples 
-        # TODO: Revisar que cambio no rompa nada
         samples = []
         for trajectory in trajectories:
             samples.extend(trajectory)
+
+        # Normalize advantages across the entire batch
+        if len(samples) > 1:
+            advantages = [s['advantage'] for s in samples]
+            mean_adv = sum(advantages) / len(advantages)
+            std_adv = (sum((a - mean_adv) ** 2 for a in advantages) / len(advantages)) ** 0.5 + 1e-8
+            for s in samples:
+                s['advantage'] = (s['advantage'] - mean_adv) / std_adv
 
         return samples
 
@@ -394,11 +399,25 @@ class PolicyTrainer:
                 mean_return = sum(s['return'] for s in samples) / len(samples)
                 mean_advantage = sum(s.get('advantage', 0.0) for s in samples) / len(samples)
                 
+                rewards = [s['reward'] for s in samples]
+                mean_reward = sum(rewards) / len(rewards)
+                std_reward = (sum((r - mean_reward) ** 2 for r in rewards) / len(rewards)) ** 0.5
+                min_reward = min(rewards)
+                max_reward = max(rewards)
+                
                 log_dict['Mean return'] = mean_return
                 log_dict['Mean advantage'] = mean_advantage
+                log_dict['Reward/mean'] = mean_reward
+                log_dict['Reward/std'] = std_reward
+                log_dict['Reward/min'] = min_reward
+                log_dict['Reward/max'] = max_reward
                 
                 writer.add_scalar('Mean return', mean_return, global_step=x_value)
                 writer.add_scalar('Mean advantage', mean_advantage, global_step=x_value)
+                writer.add_scalar('Reward/mean', mean_reward, global_step=x_value)
+                writer.add_scalar('Reward/std', std_reward, global_step=x_value)
+                writer.add_scalar('Reward/min', min_reward, global_step=x_value)
+                writer.add_scalar('Reward/max', max_reward, global_step=x_value)
 
         # ---- Validation score ----
         if score is not None:
@@ -435,14 +454,21 @@ class PolicyTrainer:
                 self.args.max_actions_val
             )
 
-            # Validation score = success rate
-            val_score = (sum(1 for p in val_problem_info if p['goal_reached']) / 
-                        len(val_problem_info) if val_problem_info else 0.0)
+            # Validation score = success rate * mean efficiency
+            # This way a model that solves fewer problems but with better plans
+            # can compete with one that solves more but with worse plans
+            success_count = sum(1 for p in val_problem_info if p['goal_reached'])
+            success_rate = success_count / len(val_problem_info) if val_problem_info else 0.0
+            
+            successful = [p for p in val_problem_info if p['goal_reached']]
+            mean_efficiency = sum(p['efficiency'] for p in successful) / len(successful) if successful else 0.0
+            
+            val_score = success_rate * mean_efficiency
 
             print(f"  Validation score: {val_score:.3f}")
 
             # Log validation metrics
-            self.log_metrics('val', curr_train_it, val_problem_info, score=val_score)
+            val_log_dict = self.log_metrics('val', curr_train_it, val_problem_info, score=val_score)
 
             # Save best checkpoint
             if val_score > best_val_score:
