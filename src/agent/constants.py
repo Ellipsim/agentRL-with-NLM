@@ -59,6 +59,7 @@ def remove_if_exists(path):
             raise
 
 # TEST AND TRAIN
-EXCLUDED_ARGS_ID = {'seed', 'run_id', 'train_mode', 'test_mode', 'raise_error_test'}
+EXCLUDED_ARGS_ID = {'seed', 'run_id', 'train_mode', 'test_mode', 'raise_error_test',
+                    'log_period', 'device', 'experiments_dir'}
 ID_LENGTH = 8
 ADDITIONAL_EXPERIMENT_INFO = {}
