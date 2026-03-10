@@ -30,6 +30,7 @@ from src.agent.pddl.problem_solver import ProblemSolver
 from src.agent.learning.generative_policy import GenerativePolicy
 from src.agent.learning.data_utils import SolverDataset, solver_collate_fn
 
+# TODO: Arreglar max-actions no consistentes
 
 class PolicyTrainer:
     """

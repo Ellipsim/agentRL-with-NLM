@@ -311,6 +311,8 @@ def read_experiment_info(experiment_info_path):
 # Problem Loading
 # =====================================================================
 
+# TODO: Max actions es declarado en dos sitios a la vez, en parser actions y aquí.
+
 def load_problems_from_dir(problem_dir, domain_path, num_problems, max_actions=None):
     """Load problems from directory with fresh parser for each problem."""
     problem_dir = Path(problem_dir)

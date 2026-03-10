@@ -1,0 +1,3 @@
+[submodule "problem_generator/pddl-generators"]
+	path = problem_generator/pddl-generators
+	url = https://github.com/AI-Planning/pddl-generators
