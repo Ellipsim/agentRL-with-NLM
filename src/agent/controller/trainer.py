@@ -286,24 +286,22 @@ class PolicyTrainer:
     # Checkpointing (from NeSIG)
     # =====================================================================
 
-    # TODO: There better ways to do this
-
     def save_checkpoint(self, model: pl.LightningModule, ckpt_path: Path) -> None:
-        """Save checkpoint using PyTorch Lightning."""
+        """Save checkpoint using torch.save."""
+        ckpt_path.parent.mkdir(parents=True, exist_ok=True)
         remove_if_exists(ckpt_path)
-
-        dummy_trainer = pl.Trainer(
-            max_epochs=0,
-            logger=False,
-            enable_checkpointing=False,
-            enable_progress_bar=False,
-            enable_model_summary=False
-        )
-        dummy_trainer.fit(model, DataLoader(dataset=SolverDataset(), num_workers=0))
-        dummy_trainer.save_checkpoint(str(ckpt_path))
-
-        if self.device.type == 'cuda':
-            model.to('cuda')
+        
+        # Build state dict manually to avoid weak reference issues
+        state_dict = {}
+        for name, param in model.named_parameters():
+            state_dict[name] = param.data.clone()
+        for name, buf in model.named_buffers():
+            state_dict[name] = buf.clone()
+        
+        torch.save({
+            'state_dict': state_dict,
+            'hparams': dict(model.hparams) if hasattr(model, 'hparams') else {},
+        }, str(ckpt_path))
 
     def save_policy(self, save_best: bool = False) -> None:
         """Save policy checkpoint."""
@@ -531,6 +529,7 @@ class PolicyTrainer:
                     )
 
             curr_train_it += 1
+            self.policy.curr_logging_it += 1
 
         # Final validation if needed
         if self.args.val_period == -1 or ((curr_train_it - 1) % self.args.val_period) != 0:

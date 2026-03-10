@@ -161,7 +161,7 @@ def parse_arguments():
 
     # ---- Logging ----
     parser.add_argument(
-        '--log-period', type=int, default=5,
+        '--log-period', type=int, default=1,
         help="Training steps between logging"
     )
 
@@ -384,15 +384,17 @@ def create_policy(args, parser, last_train_it, experiment_folder_path, device):
             )
         elif args.train_mode == "resume":
             ckpt_path = experiment_folder_path / CKPTS_FOLDER_NAME / 'last.ckpt'
-            policy = PPOSolverPolicy.load_from_checkpoint(
-                ckpt_path,
-                args=args_dict,  # Pass as dict
+            # Create fresh policy, then load saved state
+            policy = PPOSolverPolicy(
+                args=args_dict,
                 actor_class=NLMWrapperActor,
                 actor_arguments=actor_args,
                 critic_class=NLMWrapperCritic,
                 critic_arguments=critic_args,
                 device=device
             )
+            checkpoint = torch.load(str(ckpt_path), map_location=device)
+            policy.load_state_dict(checkpoint['state_dict'])
         else:
             raise ValueError(f"Invalid train_mode: {args.train_mode}")
         
@@ -537,15 +539,16 @@ def test(args, parser, experiment_id, experiment_folder_path):
         args_dict = vars(args)
         
         ckpt_path = experiment_folder_path / CKPTS_FOLDER_NAME / 'best.ckpt'
-        policy = PPOSolverPolicy.load_from_checkpoint(
-            ckpt_path,
-            args=args_dict,  # Pass as dict
+        policy = PPOSolverPolicy(
+            args=args_dict,
             actor_class=NLMWrapperActor,
             actor_arguments=actor_args,
             critic_class=NLMWrapperCritic,
             critic_arguments=critic_args,
             device=device
         )
+        checkpoint = torch.load(str(ckpt_path), map_location=device)
+        policy.load_state_dict(checkpoint['state_dict'])
     
     # Create problem solver
     problem_solver = ProblemSolver(

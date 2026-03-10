@@ -135,6 +135,10 @@ class PPOSolverPolicy(GenerativePolicy):
         self.entropy_loss_sum = 0.0
         self.policy_entropy_sum = 0.0
         self.num_samples = 0
+        # Added for a better logging with PPO metrics
+        self.approx_kl_sum = 0.0
+        self.clip_fraction_sum = 0.0
+        self.num_minibatches = 0
 
         self.register_buffer('curr_logging_it', torch.tensor(1, dtype=torch.int32, requires_grad=False))
 
@@ -310,6 +314,12 @@ class PPOSolverPolicy(GenerativePolicy):
         epsilon = self.hparams['solve_epsilon']
         ppo_loss = torch.mean(-torch.min(ratio * advantages, \
                               torch.clamp(ratio, 1 - epsilon, 1 + epsilon) * advantages,))
+        
+        # ---- PPO diagnostics ----
+        with torch.no_grad():
+            log_ratio = torch.log(ratio)
+            approx_kl = -log_ratio.mean().item()  # KL(old || new) ≈ E[-log(new/old)]
+            clip_fraction = ((ratio < 1 - epsilon) | (ratio > 1 + epsilon)).float().mean().item()
 
         # ---- Entropy bonus ----
         policy_entropy = torch.mean(torch.stack([self.calculate_entropy(lp, actions) for lp, actions \
@@ -318,13 +328,15 @@ class PPOSolverPolicy(GenerativePolicy):
 
         loss = ppo_loss + entropy_loss + critic_loss # loss = actor_loss + critic_loss
 
-        # ---- Logging (first PPO epoch only) ----
-        if self.curr_logging_it.item() % self.hparams['log_period'] == 0 and self.current_epoch == 0:
-            self.num_samples += len(train_batch['states'])
-            self.critic_loss_sum += critic_loss.detach().item()
-            self.ppo_loss_sum += ppo_loss.detach().item()
-            self.entropy_loss_sum += entropy_loss.detach().item()
-            self.policy_entropy_sum += policy_entropy.detach().item()
+        # ---- Accumulate metrics across all epochs and mini-batches ----
+        self.num_samples += len(train_batch['states'])
+        self.num_minibatches += 1
+        self.critic_loss_sum += critic_loss.detach().item()
+        self.ppo_loss_sum += ppo_loss.detach().item()
+        self.entropy_loss_sum += entropy_loss.detach().item()
+        self.policy_entropy_sum += policy_entropy.detach().item()
+        self.approx_kl_sum += approx_kl
+        self.clip_fraction_sum += clip_fraction
 
         return loss
 
@@ -347,17 +359,16 @@ class PPOSolverPolicy(GenerativePolicy):
         return total_norm_actor, total_norm_critic
 
     def on_after_backward(self):
-        if (self.curr_logging_it.item() % self.hparams['log_period'] == 0 and self.current_epoch == 0):
-            total_norm_actor, total_norm_critic = self.get_gradient_norm()
-            self.total_norm_actor_sum += total_norm_actor
-            self.total_norm_critic_sum += total_norm_critic
+        total_norm_actor, total_norm_critic = self.get_gradient_norm()
+        self.total_norm_actor_sum += total_norm_actor
+        self.total_norm_critic_sum += total_norm_critic
 
     def on_train_end(self):
         super().on_train_end()
         self.anneal_entropy_coeff()
 
-        if self.curr_logging_it.item() % self.hparams['log_period'] == 0:
-            n = self.num_samples
+        n = self.num_minibatches  # correct denominator for already-averaged losses
+        if n > 0 and self.curr_logging_it.item() % self.hparams['log_period'] == 0:
             self.logger.experiment.add_scalars(
                 'Gradient Norm',
                 {'Actor': self.total_norm_actor_sum / n,
@@ -378,11 +389,23 @@ class PPOSolverPolicy(GenerativePolicy):
                 'Policy Entropy', self.policy_entropy_sum / n,
                 global_step=self.curr_logging_it.item(),
             )
-            # Reset counters
-            self.total_norm_actor_sum = 0.0
-            self.total_norm_critic_sum = 0.0
-            self.critic_loss_sum = 0.0
-            self.ppo_loss_sum = 0.0
-            self.entropy_loss_sum = 0.0
-            self.policy_entropy_sum = 0.0
-            self.num_samples = 0
+            self.logger.experiment.add_scalar(
+                'Approx KL', self.approx_kl_sum / n,
+                global_step=self.curr_logging_it.item(),
+            )
+            self.logger.experiment.add_scalar(
+                'Clip Fraction', self.clip_fraction_sum / n,
+                global_step=self.curr_logging_it.item(),
+            )
+
+        # Reset counters
+        self.total_norm_actor_sum = 0.0
+        self.total_norm_critic_sum = 0.0
+        self.critic_loss_sum = 0.0
+        self.ppo_loss_sum = 0.0
+        self.entropy_loss_sum = 0.0
+        self.policy_entropy_sum = 0.0
+        self.approx_kl_sum = 0.0
+        self.clip_fraction_sum = 0.0
+        self.num_samples = 0
+        self.num_minibatches = 0
