@@ -105,10 +105,6 @@ agentRL/
 - Implement curriculum learning
 - Add visualization of problem solving trajectories
 
-## Author
-
-jrdominguez
-
 ## License
 
 MIT
