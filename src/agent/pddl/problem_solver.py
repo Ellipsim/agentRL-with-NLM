@@ -23,8 +23,6 @@ from lifted_pddl import Parser
 from src.agent.learning.generative_policy import GenerativePolicy
 from src.agent.pddl.pddl_problem import PDDLProblem
 
-#TODO: Revisar que funcionan correctamente y comparar con NeSIG
-
 class ProblemSolver:
     """
     Solves one or more pre-specified PDDL problems using a given policy.
@@ -288,8 +286,7 @@ class ProblemSolver:
 
             goal_reached = is_solved[i]
             num_steps = problem.num_actions_executed
-
-            # TODO: Revisar estas medidas, solution-ratio es inverso de efficiency y son un poco cutres
+            
             # Calculate problem-level metrics (like NeSIG's problem info)
             if goal_reached:
                 efficiency = 1.0 - (num_steps / list_max_actions[i]) if list_max_actions[i] > 0 else 1.0

@@ -17,15 +17,53 @@ pip install -r requirements.txt
 ```
 
 ## Usage
+
+Withour curriculum learning:
+
 ```bash
 python -m src.agent.controller.train_and_test \
-  --domain-path data/domains/blocksworld.pddl \
-  --train-problems-dir data/problems/train \
-  --val-problems-dir data/problems/val \
-  --test-problems-dir data/problems/test \
-  --steps 100 \
-  --policy-type PPO \
-  --device gpu
+    --domain-path data/domains/blocksworld.pddl \
+    --train-problems-dir data/problems/train \
+    --val-problems-dir data/problems/val \
+    --test-problems-dir data/problems/test \
+    --device gpu \
+    --seed 1 \
+    --steps 200 \
+    --num-problems-train 30 \
+    --num-problems-val 30 \
+    --num-problems-test 30 \
+    --max-actions-train 50 \
+    --max-actions-val 50 \
+    --max-actions-test 50 \
+    --solve-lr 1e-3 \
+    --solve-epsilon 0.1 \
+    --val-period 20 \
+    --log-period 1 \
+    --batch-size 32 \
+    --disc-factor 0.99 \
+    --gae-factor 0.95 \
+    --train-mode supersede \
+    --test-mode supersede
+```
+
+With curriculum learning:
+```bash
+python -m src.agent.controller.train_and_test \
+    --domain-path data/domains/blocksworld.pddl \
+    --train-problems-dir data/problems/train \
+    --val-problems-dir data/problems/val \
+    --test-problems-dir data/problems/test \
+    --device gpu \
+    --seed 1 \
+    --steps 500 \
+    --num-problems-train 30 \
+    --num-problems-val 30 \
+    --num-problems-test 100 \
+    --max-actions-train 50 \
+    --max-actions-val 50 \
+    --max-actions-test 50 \
+    --solve-lr 1e-3 \
+    --train-mode supersede
 ```
 
 ## **Key Arguments:**

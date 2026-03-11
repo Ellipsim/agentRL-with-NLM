@@ -311,8 +311,6 @@ def read_experiment_info(experiment_info_path):
 # Problem Loading
 # =====================================================================
 
-# TODO: Max actions es declarado en dos sitios a la vez, en parser actions y aquí.
-
 def load_problems_from_dir(problem_dir, domain_path, num_problems, max_actions=None):
     """Load problems from directory with fresh parser for each problem."""
     problem_dir = Path(problem_dir)
@@ -344,8 +342,6 @@ def load_problems_from_dir(problem_dir, domain_path, num_problems, max_actions=N
 # =====================================================================
 # Policy Creation
 # =====================================================================
-
-# TODO: Es correcto tener las max action aquí?
 
 def create_policy(args, parser, last_train_it, experiment_folder_path, device):
     """Create or load policy."""
@@ -604,6 +600,7 @@ def main(args):
     test(args, parser, experiment_id, experiment_folder_path)
     
     print("\n>>> Done!\n")
+    print(f">>> Experiment ID: {experiment_id}\n")
 
 
 if __name__ == '__main__':

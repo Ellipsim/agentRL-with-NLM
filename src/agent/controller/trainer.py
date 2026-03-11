@@ -30,8 +30,6 @@ from src.agent.pddl.problem_solver import ProblemSolver
 from src.agent.learning.generative_policy import GenerativePolicy
 from src.agent.learning.data_utils import SolverDataset, solver_collate_fn
 
-# TODO: Arreglar max-actions no consistentes
-
 class PolicyTrainer:
     """
     Class that encapsulates all functionality needed to train, validate and test a solver policy.
@@ -118,7 +116,6 @@ class PolicyTrainer:
         if num_problems == 0:
             return [], [], [], 0.0
 
-        # TODO: Revisar que los budget los haga bien
         # Handle max_actions as either int or tuple of per-problem budgets
         if isinstance(max_actions, int):
             max_actions_list = max_actions
@@ -612,6 +609,9 @@ class PolicyTrainer:
         print(f"{'='*70}\n")
 
         self.test_folder.mkdir(parents=True, exist_ok=True)
+
+        if self.device.type == 'cuda':
+            self.policy.to('cuda')
 
         with torch.no_grad():
             # Get test problems and solve them

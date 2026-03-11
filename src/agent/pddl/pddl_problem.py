@@ -91,7 +91,7 @@ class PDDLProblem:
 
         # The goal is a frozenset of atoms that the agent must achieve.
         self._goal: Optional[tuple] = goal  # tuple of sorted atoms
-        self._goal_state = (    #TODO: Revisar goal state
+        self._goal_state = (    
             deepcopy(goal_state)
             if goal_state is not None
             else PDDLState(parser.types, parser.type_hierarchy, parser.predicates, list(parser.object_types), goal)
@@ -134,7 +134,7 @@ class PDDLProblem:
         # (pred_name, (obj0, obj1, …)) to match the atom format used by PDDLState.
         # Skip the first element (is_true flag)
         goal = set(goal[1:] for goal in parser.goals)
-        goal_state = PDDLState( #TODO: revisar goal state
+        goal_state = PDDLState( 
             parser.types,
             parser.type_hierarchy,
             parser.predicates,
