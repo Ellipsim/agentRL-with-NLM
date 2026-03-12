@@ -63,3 +63,6 @@ EXCLUDED_ARGS_ID = {'seed', 'run_id', 'train_mode', 'test_mode', 'raise_error_te
                     'log_period', 'device', 'experiments_dir'}
 ID_LENGTH = 8
 ADDITIONAL_EXPERIMENT_INFO = {}
+
+# Replay buffer
+REPLAY_BUFFER_FILENAME = 'replay_buffer.json'

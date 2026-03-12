@@ -22,13 +22,55 @@ import torch
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 import pytorch_lightning as pl
+import random
 
 from src.agent.constants import EXPERIMENT_INFO_FILENAME, LOGS_FOLDER_NAME, CKPTS_FOLDER_NAME, VAL_FOLDER_NAME, \
-                                TEST_FOLDER_NAME, remove_if_exists
+                                TEST_FOLDER_NAME, remove_if_exists, REPLAY_BUFFER_FILENAME
 from src.agent.pddl.pddl_problem import PDDLProblem
 from src.agent.pddl.problem_solver import ProblemSolver
 from src.agent.learning.generative_policy import GenerativePolicy
 from src.agent.learning.data_utils import SolverDataset, solver_collate_fn
+
+# =====================================================================
+# Experience Replay Buffer
+# =====================================================================
+
+class ReplayBuffer:
+    """FIFO buffer of problem file paths seen during training.
+
+    Stores only path strings so memory footprint stays tiny.
+    Problems are loaded fresh from disk when sampled.
+    """
+
+    def __init__(self, max_size: int):
+        self.max_size = max_size
+        self._paths: List[str] = []
+
+    def save(self, folder: Path):
+        (folder / REPLAY_BUFFER_FILENAME).write_text(json.dumps(self._paths))
+
+    def load(self, folder: Path):
+        p = folder / REPLAY_BUFFER_FILENAME
+        if p.exists():
+            self._paths = json.loads(p.read_text())
+
+    def add(self, problem_path: str):
+        """Add a path. Skips exact duplicates; evicts oldest entry when full."""
+        if problem_path not in self._paths:
+            self._paths.append(problem_path)
+        if len(self._paths) > self.max_size:
+            self._paths.pop(0)  # FIFO
+
+    def register_dir(self, problems_dir: str):
+        """Add every .pddl file in a directory to the buffer."""
+        for p in sorted(Path(problems_dir).glob("*.pddl")):
+            self.add(str(p))
+
+    def sample(self) -> Optional[str]:
+        return random.choice(self._paths) if self._paths else None
+
+    def __len__(self):
+        return len(self._paths)
 
 class PolicyTrainer:
     """
@@ -655,3 +697,96 @@ class PolicyTrainer:
         print(f"\n{'='*70}")
         print(f"Testing Complete!")
         print(f"{'='*70}\n")
+
+    # =====================================================================
+    # Automatic Curriculum Learning
+    # =====================================================================
+
+    def train_acl_level(self, problems: List[PDDLProblem], test_problems: List[PDDLProblem],
+                        start_step: int, max_steps: int) -> Tuple[int, bool]:
+        """Train on a fixed set of problems until the level is beaten or steps run out.
+
+        Parameters
+        ----------
+        problems : List[PDDLProblem]
+            Current curriculum problems (with replay already mixed in by caller).
+        test_problems : List[PDDLProblem]
+            Fixed test set for periodic evaluation.
+        start_step : int
+            Global step counter at the start of this call.
+        max_steps : int
+            Total training budget (global). Stop when current step > max_steps.
+
+        Returns
+        -------
+        last_step : int
+            The last step executed (so caller knows how many steps remain).
+        level_beaten : bool
+            True if advance_threshold was met, False if max_steps was exhausted.
+        """
+        def should_eval(step: int) -> bool:
+            if self.args.test_period == -1:
+                return step == max_steps
+            return step % self.args.test_period == 0
+
+        if self.device.type == 'cuda':
+            self.policy.to('cuda')
+
+        step = start_step
+        level_beaten = False
+
+        while step <= max_steps:
+            print(f"\nStep {step}/{max_steps}")
+
+            # --- Collect trajectories ---
+            with torch.no_grad():
+                is_solved, problem_info, trajectories, elapsed = (
+                    self._solve_and_collect_trajectories(problems, self.args.max_actions_train)
+                )
+
+            if not trajectories:
+                print("  No trajectories collected, skipping PPO update.")
+                step += 1
+                continue
+
+            # --- Process + PPO update ---
+            samples = self._process_trajectories(trajectories, problem_info)
+            self._perform_train_step(samples)
+
+            # --- Checkpoint ---
+            self.save_policy(save_best=False)
+
+            # --- TensorBoard logging ---
+            if step % self.args.log_period == 0:
+                with torch.no_grad():
+                    self.log_metrics('train', step, problem_info, trajectories=trajectories)
+
+            # --- Periodic test evaluation ---
+            if should_eval(step):
+                with torch.no_grad():
+                    _, test_info, _, _ = self._solve_and_collect_trajectories(
+                        test_problems, self.args.max_actions_test
+                    )
+                test_metrics = self.log_metrics('test', step, test_info)
+                print(f"  [Current Success rate on TEST | Step: {step}]  "
+                    f"Solved = {test_metrics['Success rate']:.1%}  "
+                    f"Efficiency = {test_metrics['Mean efficiency']:.3f}")
+
+            # --- Check if level is beaten ---
+            if step % self.args.check_advance_period == 0:
+                success_rate = sum(
+                    1 for p in problem_info if p.get('goal_reached', False)
+                ) / len(problem_info)
+                print(f"  [LEVEL CHECK]  Success Rate = {success_rate:.1%} -> "
+                    f"Threshold = {self.args.advance_threshold:.1%}")
+                if success_rate >= self.args.advance_threshold:
+                    print(f"  [Success]")
+                    level_beaten = True
+                    step += 1
+                    break
+                print(f"  [Failure]")
+
+            self.policy.curr_logging_it += 1
+            step += 1
+
+        return step, level_beaten
