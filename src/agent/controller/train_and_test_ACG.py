@@ -120,6 +120,8 @@ def parse_arguments():
                         help="Min trajectory samples needed before a PPO update")
     parser.add_argument('--grad-clip', type=float, default=0.5,
                         help="Gradient clipping (-1 to disable)")
+    parser.add_argument('--target-success-rate', type=float, default=1.0,
+                    help="Stop training early if test success rate reaches this value.")
 
     # ---- Returns / advantages ----
     parser.add_argument('--disc-factor', type=float, default=0.99, help="Discount factor gamma")
@@ -137,7 +139,7 @@ def parse_arguments():
     parser.add_argument('--replay-prob', type=float, default=0.2,
                         help="Probability of replacing a curriculum slot with a replayed "
                              "problem. Set 0.0 to disable.")
-    parser.add_argument('--replay-buffer-size', type=int, default=500,
+    parser.add_argument('--replay-buffer-size', type=int, default=3000,
                         help="Max problem paths kept in the replay buffer (FIFO eviction).")
 
     # ---- Logging ----
@@ -309,23 +311,11 @@ def load_problems_from_dir(
     replay_buffer: Optional[ReplayBuffer] = None,
     replay_prob: float = 0.0,
 ) -> List[PDDLProblem]:
-    """Load ``num_problems`` problems, optionally mixing in replayed ones.
-
-    For each slot:
-      - With probability ``replay_prob``, draw a path from ``replay_buffer``
-        (if non-empty) instead of the current curriculum directory.
-      - Otherwise, pick sequentially from the curriculum directory.
-
-    All curriculum paths are also registered into the replay buffer.
-    """
     import random
     problem_dir = Path(problem_dir)
     problem_files = sorted(problem_dir.glob("*.pddl"))
     if not problem_files:
         raise FileNotFoundError(f"No .pddl files in {problem_dir}")
-
-    if replay_buffer is not None:
-        replay_buffer.register_dir(str(problem_dir))
 
     problems = []
     for i in range(num_problems):
@@ -348,6 +338,10 @@ def load_problems_from_dir(
                     else max_actions
                 )
             problems.append(problem)
+
+    # Register AFTER sampling so current level never appears in replay slots
+    if replay_buffer is not None:
+        replay_buffer.register_dir(str(problem_dir))
 
     return problems
 
@@ -495,6 +489,9 @@ def train(args, parser, experiment_id, experiment_folder_path: Path):
     
 
     # --- Curriculum loop ---
+    cumulative_regret = 0.0
+    steps_to_target = None
+
     for level in range(1, args.max_levels + 1):
         if current_step > args.steps:
             break
@@ -504,34 +501,31 @@ def train(args, parser, experiment_id, experiment_folder_path: Path):
 
         print(f"\n[LEVEL {level}/{args.max_levels}  {min_blocks}-{max_blocks} blocks]")
 
-        # Generate fresh problems for this level
-        generate_problems(
-            args.generator_path, str(level_train_dir),
-            args.num_problems_train, min_blocks, max_blocks,
-            seed_start=level * 10000,
-        )
+        generate_problems(...)
+        train_problems = load_problems_from_dir(...)
 
-        # Load problems (with replay mixing)
-        train_problems = load_problems_from_dir(
-            str(level_train_dir), args.domain_path,
-            args.num_problems_train,
-            max_actions=args.max_actions_train,
-            replay_buffer=replay_buffer,
-            replay_prob=args.replay_prob,
-        )
+        # Register buffer
+        replay_buffer.register_dir(str(level_train_dir))
 
-        # Train until level beaten or steps exhausted
-        current_step, level_beaten = trainer.train_acl_level(
+        current_step, level_beaten, cumulative_regret, steps_to_target, target_reached = trainer.train_acl_level(
             problems=train_problems,
             test_problems=test_problems,
             start_step=current_step,
             max_steps=args.steps,
+            cumulative_regret=cumulative_regret,
+            steps_to_target=steps_to_target,
+            target_success_rate=args.target_success_rate,
         )
 
-        # Register this level's problems in replay buffer
-        replay_buffer.register_dir(str(level_train_dir))
+        # Log curriculum level
+        trainer.log_curriculum_level(level, current_step)
+
         replay_buffer.save(experiment_folder_path)
         save_experiment_info(experiment_info_path, args, experiment_id, current_step - 1)
+
+        if target_reached:
+            print(f"\n  Target success rate reached. Stopping training.")
+            break
 
         if not level_beaten:
             print(f"\n  Steps exhausted at level {level}/{args.max_levels}.")
@@ -539,25 +533,25 @@ def train(args, parser, experiment_id, experiment_folder_path: Path):
 
         print(f"\n  ✓ Level {level} beaten. Advancing...")
 
-        # If max level beaten, keep training on it until steps run out
         if level == args.max_levels:
             print(f"  Max level reached. Continuing on level {level} until steps run out...")
             while current_step <= args.steps:
-                train_problems = load_problems_from_dir(
-                    str(level_train_dir), args.domain_path,
-                    args.num_problems_train,
-                    max_actions=args.max_actions_train,
-                    replay_buffer=replay_buffer,
-                    replay_prob=args.replay_prob,
-                )
-                current_step, _ = trainer.train_acl_level(
+                train_problems = load_problems_from_dir(...)
+                current_step, _, cumulative_regret, steps_to_target, target_reached = trainer.train_acl_level(
                     problems=train_problems,
                     test_problems=test_problems,
                     start_step=current_step,
                     max_steps=args.steps,
+                    cumulative_regret=cumulative_regret,
+                    steps_to_target=steps_to_target,
+                    target_success_rate=args.target_success_rate,
                 )
+                trainer.log_curriculum_level(level, current_step)
                 replay_buffer.save(experiment_folder_path)
                 save_experiment_info(experiment_info_path, args, experiment_id, current_step - 1)
+                if target_reached:
+                    print(f"\n  Target success rate reached. Stopping training.")
+                    break
 
     trainer.close_writers()
     print(f"\n{'='*70}")

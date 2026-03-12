@@ -379,6 +379,9 @@ class PolicyTrainer:
     # Logging (adapted from NeSIG)
     # =====================================================================
 
+    def log_curriculum_level(self, level: int, step: int):
+        self.writers['train'].add_scalar('Curriculum level', level, global_step=step)
+
     def log_metrics(self, phase: str, x_value: int, problem_info_list: List[Dict],
                    trajectories: List[List[Dict]] = None, score: Optional[float] = None) -> Dict:
         """
@@ -702,8 +705,9 @@ class PolicyTrainer:
     # Automatic Curriculum Learning
     # =====================================================================
 
-    def train_acl_level(self, problems: List[PDDLProblem], test_problems: List[PDDLProblem],
-                        start_step: int, max_steps: int) -> Tuple[int, bool]:
+    def train_acl_level(self, problems, test_problems, start_step, max_steps,
+                    cumulative_regret=0.0, steps_to_target=None,
+                    target_success_rate=1.0) -> Tuple[int, bool, float, Optional[int], bool]:
         """Train on a fixed set of problems until the level is beaten or steps run out.
 
         Parameters
@@ -771,6 +775,21 @@ class PolicyTrainer:
                 print(f"  [Current Success rate on TEST | Step: {step}]  "
                     f"Solved = {test_metrics['Success rate']:.1%}  "
                     f"Efficiency = {test_metrics['Mean efficiency']:.3f}")
+                
+                # Regret
+                cumulative_regret += 1.0 - test_metrics['Success rate']
+                self.writers['test'].add_scalar('Cumulative regret', cumulative_regret, global_step=step)
+
+                # Steps to target
+                if steps_to_target is None and test_metrics['Success rate'] >= target_success_rate:
+                    steps_to_target = step
+                    self.writers['test'].add_scalar('Steps to target', step, global_step=step)
+                    print(f"  [TARGET REACHED @ step {step}]  "
+                        f"success_rate={test_metrics['Success rate']:.1%}")
+
+                # Early stop
+                if test_metrics['Success rate'] >= target_success_rate:
+                    return step + 1, False, cumulative_regret, steps_to_target, True
 
             # --- Check if level is beaten ---
             if step % self.args.check_advance_period == 0:
@@ -789,4 +808,4 @@ class PolicyTrainer:
             self.policy.curr_logging_it += 1
             step += 1
 
-        return step, level_beaten
+        return step, level_beaten, cumulative_regret, steps_to_target, False
