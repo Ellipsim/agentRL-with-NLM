@@ -387,7 +387,7 @@ def create_policy(args, parser, last_train_it, experiment_folder_path, device):
                 critic_arguments=critic_args,
                 device=device
             )
-        elif args.train_mode == "resume":
+        elif args.train_mode in ("resume", "skip"):
             ckpt_path = experiment_folder_path / CKPTS_FOLDER_NAME / 'last.ckpt'
             # Create fresh policy, then load saved state
             policy = PPOSolverPolicy(
@@ -450,7 +450,7 @@ def train(args, parser, experiment_id, experiment_folder_path: Path):
             args.generator_path, str(test_problems_dir),
             args.num_problems_test,
             args.test_min_blocks, args.test_max_blocks,
-            seed_start=999000,
+            seed_start=999454,
         )
 
     # Load test problems
@@ -489,9 +489,6 @@ def train(args, parser, experiment_id, experiment_folder_path: Path):
     
 
     # --- Curriculum loop ---
-    cumulative_regret = 0.0
-    steps_to_target = None
-
     for level in range(1, args.max_levels + 1):
         if current_step > args.steps:
             break
@@ -501,19 +498,32 @@ def train(args, parser, experiment_id, experiment_folder_path: Path):
 
         print(f"\n[LEVEL {level}/{args.max_levels}  {min_blocks}-{max_blocks} blocks]")
 
-        generate_problems(...)
-        train_problems = load_problems_from_dir(...)
+        generate_problems(
+            args.generator_path,
+            str(level_train_dir),
+            args.num_problems_train,
+            min_blocks,
+            max_blocks,
+            seed_start=current_step * 1000 + level,
+        )
+
+        train_problems = load_problems_from_dir(
+            str(level_train_dir),
+            args.domain_path,
+            args.num_problems_train,
+            max_actions=args.max_actions_train,
+            replay_buffer=replay_buffer,
+            replay_prob=args.replay_prob,
+        )
 
         # Register buffer
         replay_buffer.register_dir(str(level_train_dir))
 
-        current_step, level_beaten, cumulative_regret, steps_to_target, target_reached = trainer.train_acl_level(
+        current_step, level_beaten, target_reached = trainer.train_acl_level(
             problems=train_problems,
             test_problems=test_problems,
             start_step=current_step,
             max_steps=args.steps,
-            cumulative_regret=cumulative_regret,
-            steps_to_target=steps_to_target,
             target_success_rate=args.target_success_rate,
         )
 
@@ -536,16 +546,23 @@ def train(args, parser, experiment_id, experiment_folder_path: Path):
         if level == args.max_levels:
             print(f"  Max level reached. Continuing on level {level} until steps run out...")
             while current_step <= args.steps:
-                train_problems = load_problems_from_dir(...)
-                current_step, _, cumulative_regret, steps_to_target, target_reached = trainer.train_acl_level(
+                train_problems = load_problems_from_dir(
+                    str(level_train_dir),
+                    args.domain_path,
+                    args.num_problems_train,
+                    max_actions=args.max_actions_train,
+                    replay_buffer=replay_buffer,
+                    replay_prob=args.replay_prob, 
+                )
+
+                current_step, _, target_reached = trainer.train_acl_level(
                     problems=train_problems,
                     test_problems=test_problems,
                     start_step=current_step,
                     max_steps=args.steps,
-                    cumulative_regret=cumulative_regret,
-                    steps_to_target=steps_to_target,
                     target_success_rate=args.target_success_rate,
                 )
+
                 trainer.log_curriculum_level(level, current_step)
                 replay_buffer.save(experiment_folder_path)
                 save_experiment_info(experiment_info_path, args, experiment_id, current_step - 1)
@@ -589,10 +606,20 @@ def run_final_test(args, parser, experiment_id, experiment_folder_path: Path):
 
     device = torch.device('cuda' if args.device == 'gpu' else 'cpu')
     last_train_it = read_last_train_it(experiment_info_path)
-    policy = create_policy(args, parser, last_train_it, experiment_folder_path, device)
+    policy = create_policy(
+        args, 
+        parser, 
+        last_train_it, 
+        experiment_folder_path, 
+        device
+    )
+    if args.policy_type != 'random':
+        checkpoint = torch.load(str(ckpt_path), map_location=device)
+        policy.load_state_dict(checkpoint['state_dict'])
 
     problem_solver = ProblemSolver(
-        parser, policy,
+        parser, 
+        policy,
         reward_goal_reached=args.reward_goal_reached,
         reward_step=args.reward_step,
         reward_efficiency=args.reward_efficiency,
@@ -602,7 +629,9 @@ def run_final_test(args, parser, experiment_id, experiment_folder_path: Path):
     test_problems_dir = Path(args.data_dir) / 'test'
     def get_test_problems():
         return load_problems_from_dir(
-            str(test_problems_dir), args.domain_path, args.num_problems_test,
+            str(test_problems_dir), 
+            args.domain_path, 
+            args.num_problems_test,
             max_actions=args.max_actions_test,
         )
 

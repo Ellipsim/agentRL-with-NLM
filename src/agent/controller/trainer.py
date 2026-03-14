@@ -122,6 +122,10 @@ class PolicyTrainer:
             'test': SummaryWriter(log_dir=self.logs_folder / 'test'),
         }
 
+        # Metrics
+        self.cumulative_regret = 0.0
+        self.steps_to_target = None
+
     # =====================================================================
     # Trajectory Collection (from provided problems)
     # =====================================================================
@@ -443,6 +447,16 @@ class PolicyTrainer:
             writer.add_scalar('Mean steps (successful)', mean_steps, global_step=x_value)
             writer.add_scalar('Mean steps (all)', mean_steps_all, global_step=x_value)
 
+
+            if phase in ('test', 'val'):
+                self.cumulative_regret += 1.0 - success_rate
+                log_dict['Cumulative regret'] = self.cumulative_regret
+                writer.add_scalar('Cumulative regret', self.cumulative_regret, global_step=x_value)
+
+                if self.steps_to_target is not None:
+                    log_dict['Steps to target'] = self.steps_to_target
+                    writer.add_scalar('Steps to target', self.steps_to_target, global_step=x_value)
+
         # ---- Trajectory metrics (train phase) ----
         if trajectories is not None and len(trajectories) > 0:
             samples = [s for traj in trajectories for s in traj]
@@ -638,7 +652,7 @@ class PolicyTrainer:
     # Testing (adapted from NeSIG)
     # =====================================================================
 
-    def test(self, test_problems_fn) -> None:
+    def test(self, test_problems_fn, global_step: int = None) -> None:
         """
         Run test experiments.
         
@@ -694,7 +708,8 @@ class PolicyTrainer:
                 json.dump(test_results, f, indent=2)
 
             # Log test metrics
-            self.log_metrics('test', 0, test_problem_info)
+            step = global_step if global_step is not None else self.args.steps
+            self.log_metrics('test', step, test_problem_info)
 
         self.close_writers()
         print(f"\n{'='*70}")
@@ -765,31 +780,26 @@ class PolicyTrainer:
                 with torch.no_grad():
                     self.log_metrics('train', step, problem_info, trajectories=trajectories)
 
-            # --- Periodic test evaluation ---
-            if should_eval(step):
-                with torch.no_grad():
-                    _, test_info, _, _ = self._solve_and_collect_trajectories(
-                        test_problems, self.args.max_actions_test
-                    )
-                test_metrics = self.log_metrics('test', step, test_info)
-                print(f"  [Current Success rate on TEST | Step: {step}]  "
-                    f"Solved = {test_metrics['Success rate']:.1%}  "
-                    f"Efficiency = {test_metrics['Mean efficiency']:.3f}")
-                
-                # Regret
-                cumulative_regret += 1.0 - test_metrics['Success rate']
-                self.writers['test'].add_scalar('Cumulative regret', cumulative_regret, global_step=step)
+                # --- Periodic test evaluation ---
+                if should_eval(step):
+                    with torch.no_grad():
+                        _, test_info, _, _ = self._solve_and_collect_trajectories(
+                            test_problems, self.args.max_actions_test
+                        )
+                    test_metrics = self.log_metrics('test', step, test_info)
+                    print(f"  [Current Success rate on TEST | Step: {step}]  "
+                        f"Solved = {test_metrics['Success rate']:.1%}  "
+                        f"Efficiency = {test_metrics['Mean efficiency']:.3f}")
 
-                # Steps to target
-                if steps_to_target is None and test_metrics['Success rate'] >= target_success_rate:
-                    steps_to_target = step
-                    self.writers['test'].add_scalar('Steps to target', step, global_step=step)
-                    print(f"  [TARGET REACHED @ step {step}]  "
-                        f"success_rate={test_metrics['Success rate']:.1%}")
+                    # Steps to target
+                    if self.steps_to_target is None and test_metrics['Success rate'] >= target_success_rate:
+                        self.steps_to_target = step
+                        print(f"  [TARGET REACHED @ step {step}]  "
+                            f"success_rate={test_metrics['Success rate']:.1%}")
 
-                # Early stop
-                if test_metrics['Success rate'] >= target_success_rate:
-                    return step + 1, False, cumulative_regret, steps_to_target, True
+                    # Early stop
+                    if test_metrics['Success rate'] >= target_success_rate:
+                        return step + 1, False, True
 
             # --- Check if level is beaten ---
             if step % self.args.check_advance_period == 0:
@@ -808,4 +818,4 @@ class PolicyTrainer:
             self.policy.curr_logging_it += 1
             step += 1
 
-        return step, level_beaten, cumulative_regret, steps_to_target, False
+        return step, level_beaten, False

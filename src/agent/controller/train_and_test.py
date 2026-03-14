@@ -380,7 +380,7 @@ def create_policy(args, parser, last_train_it, experiment_folder_path, device):
                 critic_arguments=critic_args,
                 device=device
             )
-        elif args.train_mode == "resume":
+        elif args.train_mode in ("resume", "skip"):
             ckpt_path = experiment_folder_path / CKPTS_FOLDER_NAME / 'last.ckpt'
             # Create fresh policy, then load saved state
             policy = PPOSolverPolicy(
