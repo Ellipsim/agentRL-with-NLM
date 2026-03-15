@@ -1,3 +1,6 @@
 [submodule "problem_generator/pddl-generators"]
 	path = problem_generator/pddl-generators
 	url = https://github.com/AI-Planning/pddl-generators
+[submodule "nesig_teacher"]
+	path = nesig_teacher
+	url = https://github.com/ari-dasci/S-PlanningProblemGeneration.git
