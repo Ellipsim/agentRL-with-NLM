@@ -1,24 +1,23 @@
-# AgentRL - PDDL Solver with PPO
+# Training Scripts — AgentRL PDDL Solver
 
-A reinforcement learning agent for solving PDDL planning problems using PPO (Proximal Policy Optimization).
+This document covers the two training scripts available for training the PPO solver policy.
 
-## Features
+---
 
-- **PDDL Problem Solver**: Load and solve PDDL blocksworld problems
-- **PPO Policy**: Trained policy using Proximal Policy Optimization
-- **Neural Network**: NLM (Neural Logic Machine) for action prediction
-- **Comprehensive Tests**: Full test suite for all components
+## Scripts Overview
 
-## Installation
-```bash
-conda create -n agentRL python=3.8
-conda activate agentRL
-pip install -r requirements.txt
-```
+| Script | Module | Description |
+|--------|--------|-------------|
+| `train_and_test.py` | `src.agent.controller.train_and_test` | Standard training with fixed problem sets |
+| `train_and_test_ACG.py` | `src.agent.controller.train_and_test_ACG` | Automatic Curriculum Generation (ACG) with progressive difficulty |
 
-## Usage
+---
 
-Withour curriculum learning:
+## Training Without Curriculum (`train_and_test.py`)
+
+Standard training loop. Requires pre-generated problem sets for train, validation, and test splits. Selects the best checkpoint based on validation performance.
+
+### Usage
 
 ```bash
 python -m src.agent.controller.train_and_test \
@@ -30,13 +29,11 @@ python -m src.agent.controller.train_and_test \
     --seed 1 \
     --steps 200 \
     --num-problems-train 30 \
-    --num-problems-val 30 \
-    --num-problems-test 30 \
-    --max-actions-train 50 \
-    --max-actions-val 50 \
-    --max-actions-test 50 \
-    --solve-lr 1e-3 \
-    --solve-epsilon 0.1 \
+    --num-problems-val 100 \
+    --num-problems-test 100 \
+    --max-actions-train 116 \
+    --max-actions-val 116 \
+    --max-actions-test 116 \
     --val-period 20 \
     --log-period 1 \
     --batch-size 32 \
@@ -46,104 +43,187 @@ python -m src.agent.controller.train_and_test \
     --test-mode supersede
 ```
 
-With curriculum learning:
+> **Note:** The maximum number of actions needed to solve a Blocksworld problem with N blocks is `4 * (N - 1)`.
+
+### Key Arguments
+
+#### Domain & Problems
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--domain-path` | required | Path to `domain.pddl` |
+| `--train-problems-dir` | required | Directory with training `.pddl` files |
+| `--val-problems-dir` | required | Directory with validation `.pddl` files |
+| `--test-problems-dir` | required | Directory with test `.pddl` files |
+
+#### Training
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--steps` | 100 | Total training iterations |
+| `--num-problems-train` | 5 | Problems solved per iteration |
+| `--max-actions-train` | 50 | Action budget per training problem |
+| `--batch-size` | 32 | PPO minibatch size |
+| `--min-samples-train` | 10 | Min trajectory samples before a PPO update |
+| `--grad-clip` | 0.5 | Gradient clipping (`-1` to disable) |
+| `--disc-factor` | 0.99 | Discount factor γ |
+| `--gae-factor` | 0.95 | GAE factor λ |
+
+#### Validation
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--val-period` | 10 | Steps between validation runs |
+| `--num-problems-val` | 10 | Problems per validation epoch |
+| `--max-actions-val` | 50 | Action budget per validation problem |
+
+#### Testing
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--num-problems-test` | 20 | Problems per test run |
+| `--max-actions-test` | 50 | Action budget per test problem |
+
+#### Modes
+| Argument | Options | Description |
+|----------|---------|-------------|
+| `--train-mode` | `resume` / `supersede` / `skip` | Resume continues from last checkpoint; supersede restarts from scratch |
+| `--test-mode` | `missing` / `supersede` / `skip` | Controls the final test run |
+
+#### Rewards
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--reward-goal-reached` | 1.0 | Bonus reward when goal is reached |
+| `--reward-step` | -0.01 | Penalty per action step |
+| `--reward-efficiency` | 0.5 | Weight for efficiency bonus at episode end |
+
+---
+
+## Training With Curriculum (`train_and_test_ACG.py`)
+
+Automatic Curriculum Generation training loop. Problems are generated on-the-fly with increasing difficulty. The agent must reach a configurable success threshold before advancing to the next difficulty level. Includes experience replay to prevent forgetting.
+
+### Usage
+
 ```bash
-python -m src.agent.controller.train_and_test \
+python -m src.agent.controller.train_and_test_ACG \
     --domain-path data/domains/blocksworld.pddl \
-    --train-problems-dir data/problems/train \
-    --val-problems-dir data/problems/val \
-    --test-problems-dir data/problems/test \
     --device gpu \
     --seed 1 \
-    --steps 500 \
-    --num-problems-train 30 \
-    --num-problems-val 30 \
+    --steps 200 \
+    --num-problems-train 20 \
     --num-problems-test 100 \
-    --max-actions-train 50 \
-    --max-actions-val 50 \
-    --max-actions-test 50 \
-    --solve-lr 1e-3 \
-    --train-mode supersede
+    --test-period 20 \
+    --check-advance-period 5 \
+    --advance-threshold 0.8 \
+    --max-levels 20 \
+    --min-blocks-start 2 \
+    --max-blocks-start 3 \
+    --blocks-increment 1 \
+    --log-period 1 \
+    --batch-size 32 \
+    --replay-prob 0.3 \
+    --replay-buffer-size 500 \
+    --train-mode supersede \
+    --test-mode supersede
 ```
 
-## **Key Arguments:**
+### Key Arguments
+
+#### Domain & Problem Generation
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--domain-path` | required | Path to `domain.pddl` |
+| `--generator-path` | `./problem_generator/.../blocksworld` | Path to the blocksworld generator binary |
+| `--data-dir` | `./data/problems/curriculum` | Directory where generated problems are stored |
+
+#### Curriculum Configuration
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--min-blocks-start` | 2 | Minimum blocks at level 1 |
+| `--max-blocks-start` | 3 | Maximum blocks at level 1 |
+| `--blocks-increment` | 1 | Blocks added per level |
+| `--max-levels` | 4 | Total number of curriculum levels |
+| `--advance-threshold` | 0.8 | Success rate required to advance to the next level |
+| `--check-advance-period` | 10 | How often (in steps) to check if ready to advance |
+| `--target-success-rate` | 1.0 | Stop training early if test success rate reaches this value |
+| `--test-min-blocks` | level 1 min | Min blocks for the fixed test set |
+| `--test-max-blocks` | hardest level max | Max blocks for the fixed test set |
+
+#### Training
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--steps` | 100 | Total training iterations |
+| `--num-problems-train` | 5 | Problems solved per iteration |
+| `--max-actions-train` | auto | Action budget per training problem (defaults to `4 * (max_blocks - 1)`) |
+| `--batch-size` | 32 | PPO minibatch size |
+| `--min-samples-train` | 10 | Min trajectory samples before a PPO update |
+| `--grad-clip` | 0.5 | Gradient clipping (`-1` to disable) |
+| `--disc-factor` | 0.99 | Discount factor γ |
+| `--gae-factor` | 0.95 | GAE factor λ |
+
+#### Periodic Test Evaluation
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--test-period` | 10 | Steps between test evaluations (`-1` = only at end) |
+| `--num-problems-test` | 20 | Problems per test evaluation |
+| `--max-actions-test` | auto | Action budget per test problem |
+
+#### Experience Replay
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--replay-prob` | 0.2 | Probability of replacing a training slot with a replayed problem (`0.0` to disable) |
+| `--replay-buffer-size` | 3000 | Max problems stored in the replay buffer (FIFO eviction) |
+
+#### Offline Evaluation
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--save-level-checkpoints` | False | Save a checkpoint each time the curriculum advances a level, for later offline evaluation |
+
+#### Modes & Rewards
+Same as `train_and_test.py` — see the tables above.
+
+---
+
+## Offline Per-Level Evaluation
+
+When training with `--save-level-checkpoints`, you can run a full per-level evaluation after training without slowing down the training run:
+
+```bash
+python -m src.scripts.evaluate_policy_per_level \
+    --experiment-id <id> \
+    --domain-path data/domains/blocksworld.pddl \
+    --num-problems-per-level 50
 ```
-Domain & Problems:
-  --domain-path           Path to domain.pddl
-  --train-problems-dir    Training problems folder
-  --val-problems-dir      Validation problems folder
-  --test-problems-dir     Test problems folder
 
-Training:
-  --steps                 Number of iterations (default: 100)
-  --num-problems-train    Problems per iteration (default: 5)
-  --max-actions-train     Action budget (default: 50)
-  --batch-size            PPO batch size (default: 32)
-  --solve-PPO-epochs      PPO epochs (default: 3)
+This will discover all saved level-advance checkpoints, evaluate each one across all difficulty levels, and produce:
+- One JSON + three-panel plot per checkpoint
+- A single combined `all_advance_evals.png` showing success rate progression across all curriculum advances
 
-Validation:
-  --val-period            Steps between validation (default: 10)
-  --num-problems-val      Val problems per epoch (default: 10)
+Use `--force-reeval` to re-evaluate checkpoints that already have saved results.
 
-Testing:
-  --num-problems-test     Test problems (default: 20)
+---
 
-Modes:
-  --train-mode            skip/supersede/resume (default: resume)
-  --test-mode             skip/supersede/missing (default: missing)
+## Experiment Management
 
-Rewards:
-  --reward-goal-reached   Goal bonus (default: 1.0)
-  --reward-step           Step penalty (default: -0.01)
-  --reward-efficiency     Efficiency weight (default: 0.5)
+Both scripts generate a unique experiment ID based on the argument hash and store all outputs under `./experiments/<experiment_id>/`:
+
+```
+experiments/<id>/
+├── experiment_info.json       # All hyperparameters and metadata
+├── checkpoints/
+│   ├── last.ckpt              # Latest checkpoint
+│   ├── best.ckpt              # Best checkpoint (train_and_test.py only)
+│   └── level_advances/        # Per-level checkpoints (ACG only, with --save-level-checkpoints)
+├── logs/                      # TensorBoard logs
+└── test/                      # Final test results
 ```
 
-## Project Structure
+---
+
+## Reproducibility
+
+Both scripts accept `--seed` and `--run-id`. Use `--run-id` to repeat an experiment with identical hyperparameters while producing a different experiment ID:
+
+```bash
+# Run experiment 3 times
+python -m src.agent.controller.train_and_test_ACG --seed 1 --run-id 0 ...
+python -m src.agent.controller.train_and_test_ACG --seed 1 --run-id 1 ...
+python -m src.agent.controller.train_and_test_ACG --seed 1 --run-id 2 ...
 ```
-agentRL/
-├── src/
-│   └── agent/
-│       ├── pddl/
-│       │   ├── pddl_problem.py
-│       │   └── pddl_state.py
-│       └── learning/
-│           ├── generative_policy.py
-│           ├── model_wrapper.py
-│           └── solver_policy.py
-├── tests/
-│   ├── conftest.py
-│   ├── test_problem_loading.py
-│   ├── test_problem_state.py
-│   ├── test_problem_actions.py
-│   ├── test_problem_solving.py
-│   ├── test_solver_random_policy.py
-│   └── test_ppo_solver_policy.py
-├── data/
-│   ├── domains/
-│   └── problems/
-└── pyproject.toml
-```
-
-## Tests
-
-- `test_problem_loading.py`: Loading PDDL problems
-- `test_problem_state.py`: Problem state management
-- `test_problem_actions.py`: Action applicability and execution
-- `test_problem_solving.py`: Problem solving and reset
-- `test_solver_random_policy.py`: Random baseline policy
-- `test_ppo_solver_policy.py`: PPO policy training and inference
-
-## Known Issues
-
-- DuplicateConstantDefinition bug when deepcopying parser (workaround: use fresh_parser fixture)
-
-## Future Work
-
-- Extend to other PDDL domains beyond Blocksworld
-- Implement curriculum learning
-- Add visualization of problem solving trajectories
-
-## License
-
-MIT
-EOF

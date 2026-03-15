@@ -69,6 +69,21 @@ class ReplayBuffer:
     def sample(self) -> Optional[str]:
         return random.choice(self._paths) if self._paths else None
 
+    # Sampling with greater probability to the first levels, caused inestability because it forgot about middle levels 
+
+    # def sample(self, prioritize_early: bool = False) -> Optional[str]:
+    #     if not self._paths:
+    #         return None
+    #     if not prioritize_early:
+    #         return random.choice(self._paths)
+        
+    #     # Earlier paths (lower index) get higher weight
+    #     n = len(self._paths)
+    #     weights = [1.0 / (i + 1) for i in range(n)]  # weight = 1/position
+    #     total = sum(weights)
+    #     weights = [w / total for w in weights]
+    #     return random.choices(self._paths, weights=weights, k=1)[0]
+
     def __len__(self):
         return len(self._paths)
 
@@ -453,10 +468,6 @@ class PolicyTrainer:
                 log_dict['Cumulative regret'] = self.cumulative_regret
                 writer.add_scalar('Cumulative regret', self.cumulative_regret, global_step=x_value)
 
-                if self.steps_to_target is not None:
-                    log_dict['Steps to target'] = self.steps_to_target
-                    writer.add_scalar('Steps to target', self.steps_to_target, global_step=x_value)
-
         # ---- Trajectory metrics (train phase) ----
         if trajectories is not None and len(trajectories) > 0:
             samples = [s for traj in trajectories for s in traj]
@@ -594,7 +605,7 @@ class PolicyTrainer:
 
         curr_train_it = start_it
         while curr_train_it <= end_it:
-            print(f"\nIteration {curr_train_it}/{end_it}")
+            print(f"\n\033[1m\033[94mIteration {curr_train_it}/{end_it}\033[0m")
 
             with torch.no_grad():
                 # Get training problems and solve them
@@ -709,7 +720,19 @@ class PolicyTrainer:
 
             # Log test metrics
             step = global_step if global_step is not None else self.args.steps
-            self.log_metrics('test', step, test_problem_info)
+            self.writers['test'].add_hparams(
+                hparam_dict={
+                    'seed': self.args.seed,
+                    'steps': self.args.steps,
+                    'num_problems_test': self.args.num_problems_test,
+                },
+                metric_dict={
+                    'test/success_rate': success_rate,
+                    'test/mean_steps': mean_steps,
+                    'test/mean_efficiency': mean_efficiency,
+                    'test/num_successful': float(success_count),
+    }
+)
 
         self.close_writers()
         print(f"\n{'='*70}")
@@ -755,7 +778,8 @@ class PolicyTrainer:
         level_beaten = False
 
         while step <= max_steps:
-            print(f"\nStep {step}/{max_steps}")
+            print(f"\033[1m\033[94mStep {step}/{max_steps}\033[0m")
+
 
             # --- Collect trajectories ---
             with torch.no_grad():

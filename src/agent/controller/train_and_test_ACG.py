@@ -172,6 +172,11 @@ def parse_arguments():
     NLMWrapperActor.add_model_specific_args(parser)
     parser.add_argument('--critic-loss-weight', type=float, default=0.1)
 
+    # ---- Eval flag ----
+    parser.add_argument('--save-level-checkpoints', action='store_true',
+                        help="Save a checkpoint each time the curriculum advances a level. "
+                            "Used later by evaluate_policy_per_level.py to plot progress.")
+
     # ---- PPO policy args ----
     PPOSolverPolicy.add_model_specific_args(parser)
 
@@ -407,7 +412,38 @@ def create_policy(args, parser, last_train_it, experiment_folder_path, device):
     
     else:
         raise ValueError(f"Unknown policy type: {args.policy_type}")
+    
 
+# =====================================================================
+# Helper for evaluation
+# =====================================================================
+
+def save_level_checkpoint(experiment_folder_path: Path, policy, level: int, current_step: int):
+    """Save a checkpoint when the policy advances past a curriculum level."""
+    ckpt_dir = experiment_folder_path / CKPTS_FOLDER_NAME / 'level_advances'
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_path = ckpt_dir / f'level{level}_step{current_step}.ckpt'
+
+    # Temporarily remove the sharded tensor state_dict hook that causes
+    # a weak reference error on some PyTorch versions
+    from torch.distributed._shard.sharded_tensor import ShardedTensor
+    hooks_to_restore = []
+    for module in policy.modules():
+        bad_hooks = [h for h in module._state_dict_hooks.values()
+                     if 'sharded_tensor' in getattr(h, '__module__', '')]
+        for hook in bad_hooks:
+            handle = next(k for k, v in module._state_dict_hooks.items() if v is hook)
+            hooks_to_restore.append((module, handle, hook))
+            del module._state_dict_hooks[handle]
+
+    try:
+        state_dict = {k: v.cpu().clone() for k, v in policy.state_dict().items()}
+        torch.save({'state_dict': state_dict}, str(ckpt_path))
+        print(f"  [checkpoint] Saved level advance checkpoint to {ckpt_path}")
+    finally:
+        # Always restore the hooks
+        for module, handle, hook in hooks_to_restore:
+            module._state_dict_hooks[handle] = hook
 
 # =====================================================================
 # Training
@@ -542,6 +578,9 @@ def train(args, parser, experiment_id, experiment_folder_path: Path):
             break
 
         print(f"\n  ✓ Level {level} beaten. Advancing...")
+
+        if args.save_level_checkpoints:
+            save_level_checkpoint(experiment_folder_path, policy, level, current_step)
 
         if level == args.max_levels:
             print(f"  Max level reached. Continuing on level {level} until steps run out...")

@@ -56,3 +56,7 @@ EOF
 
 # Experiments
 experiments/*
+
+# Data
+data/problems/eval/*
+data/problems/curriculum/*
