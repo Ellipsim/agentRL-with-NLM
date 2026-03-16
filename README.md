@@ -181,6 +181,35 @@ Same as `train_and_test.py` — see the tables above.
 
 ---
 
+## Training With Curriculum NeSIG (`train_and_test_NeSIG.py`)
+
+Lore Ipsum
+
+### Usage
+
+```bash
+python -m src.agent.controller.train_and_test_NeSIG \
+    --domain-path /data/domains/blocksworld.pddl \
+    --device gpu \
+    --seed 1 \
+    --steps 5 \
+    --num-problems-train 10 \
+    --num-problems-test 20 \
+    --test-period 5 \
+    --teacher-update-period 1 \
+    --max-init-actions-train 5 \
+    --max-goal-actions-train 5 \
+    --test-min-blocks 2 \
+    --test-max-blocks 4 \
+    --generate-test-problems \
+    --nesig-warmup-steps 5 \
+    --max-generation-attempts 10 \
+    --train-mode supersede \
+    --test-mode supersede
+```
+
+---
+
 ## Offline Per-Level Evaluation
 
 When training with `--save-level-checkpoints`, you can run a full per-level evaluation after training without slowing down the training run:

@@ -1,0 +1,42 @@
+
+
+(define (problem BW-rand-15)
+(:domain BLOCKS)
+(:objects b1 b2 b3 b4 b5 b6 b7 b8 b9 b10 b11 b12 b13 b14 b15 - block)
+(:init
+(handempty)
+(on b1 b11)
+(on b2 b3)
+(on b3 b1)
+(on b4 b12)
+(on b5 b9)
+(ontable b6)
+(on b7 b8)
+(on b8 b4)
+(on b9 b2)
+(on b10 b15)
+(on b11 b7)
+(ontable b12)
+(on b13 b5)
+(on b14 b13)
+(ontable b15)
+(clear b6)
+(clear b10)
+(clear b14)
+)
+(:goal
+(and
+(on b1 b15)
+(on b2 b8)
+(on b3 b2)
+(on b4 b6)
+(on b7 b3)
+(on b9 b5)
+(on b11 b10)
+(on b12 b9)
+(on b13 b11)
+(on b14 b4))
+)
+)
+
+
