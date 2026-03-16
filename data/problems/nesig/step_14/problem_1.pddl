@@ -3,15 +3,15 @@
 (:domain BLOCKS)
 
 (:objects
-	obj0 obj1 - block
+	obj0 obj1 obj2 - block
 )
 
 (:init
-	(clear obj0)
-	(clear obj1)
+	(clear obj2)
 	(handempty)
+	(on obj1 obj0)
+	(on obj2 obj1)
 	(ontable obj0)
-	(ontable obj1)
 )
 
 (:goal (and

@@ -41,8 +41,10 @@ class StudentDifficultyEvaluator(DifficultyEvaluator):
         Difficulty reward when the student fails. Should be negative (e.g. -1.0).
     """
 
+    # TODO: Adjust penalty and difficulty reward
+
     def __init__(self, student_solver, max_actions: int, domain_path: str,
-                 penalty: float = -1.0):
+                 penalty: float = 0.0):
         self.student_solver = student_solver
         self.max_actions = max_actions
         self.domain_path = domain_path

@@ -76,6 +76,8 @@ from src.agent.learning.model_wrapper import (
 from src.agent.pddl.problem_solver import ProblemSolver
 from src.agent.pddl.pddl_state import PDDLState as StudentPDDLState
 from src.agent.controller.trainer import PolicyTrainer as StudentTrainer, ReplayBuffer, REPLAY_BUFFER_FILENAME
+
+# TODO: Copiar todas estas funciones
 from src.agent.controller.train_and_test_ACG import (
     load_problems_from_dir, generate_problems, get_level_blocks,
     save_experiment_info, read_last_train_it, create_policy,
@@ -112,13 +114,13 @@ def parse_arguments():
                         help="PPO epochs for teacher update")
     parser.add_argument('--nesig-lr', type=float, default=1e-3,
                         help="Learning rate for teacher")
-    parser.add_argument('--diversity-threshold', type=float, default=1.0)
+    parser.add_argument('--diversity-threshold', type=float, default=0.75)
     parser.add_argument('--perc-problems-diversity', type=float, default=1.0)
     parser.add_argument('--r-eventual-consistency', type=float, default=-1.0)
     parser.add_argument('--consistency-evaluator', choices=('dummy', 'domain'),
                         default='domain')
     parser.add_argument('--policy-type', choices=('random', 'PPO'), default='PPO')
-    parser.add_argument('--difficulty-penalty', type=float, default=-1.0,
+    parser.add_argument('--difficulty-penalty', type=float, default=0.0,
                         help="Difficulty reward given to NeSIG when student fails")
     
     # ---- Student ----
@@ -142,7 +144,7 @@ def parse_arguments():
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--run-id', type=int, default=0)
     parser.add_argument('--device', type=str, choices=('gpu', 'cpu'), default='gpu')
-    parser.add_argument('--nesig-warmup-steps', type=int, default=50,
+    parser.add_argument('--nesig-warmup-steps', type=int, default=30,
                     help="NeSIG-only warmup steps before co-training. Set 0 to disable.")
 
     # ---- Test evaluation ----
@@ -326,7 +328,6 @@ def build_nesig_components(args, device):
 
 def build_student(args, domain_parser, last_train_it, experiment_folder_path, device):
     """Build the student policy and problem solver."""
-    from src.agent.controller.train_and_test_ACG import create_policy
 
     student_policy = create_policy(args, domain_parser, last_train_it, experiment_folder_path, device)
 
@@ -399,6 +400,7 @@ def accumulate_consistent_problems(
               f"problems after {max_attempts} attempts")
 
     # Trim to target in case we overshot
+    if len(consistent_problems) > target: print (f"Trimming to {target} problems")
     consistent_problems = consistent_problems[:target]
 
     return consistent_problems, last_problems, last_info, last_trajectories
@@ -512,6 +514,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
     replay_buffer.load(experiment_folder_path)
 
     # ---- Test set (generated before training) ----
+    # TODO: num_test quizá tiene más sentido que se limite al número especificado
     test_problems_dir = Path(args.test_problems_dir)
     if args.generate_test_problems:
         print(f"\nGenerating test problems into {test_problems_dir}...")
@@ -555,6 +558,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
         # ------------------------------------------------------------------
         # 1. Teacher generates problems
         # ------------------------------------------------------------------
+        print(f"\033[1m\033[93m[1] TEACHER GENERATES PROBLEMS\033[0m")
         print(f"  Generating {args.num_problems_train} consistent problems...")
         consistent_problems, last_problems, last_problem_info, nesig_trajectories = \
             accumulate_consistent_problems(
@@ -579,6 +583,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
         # ------------------------------------------------------------------
         # 2. Student attempts to solve NeSIG problems
         # ------------------------------------------------------------------
+        print(f"\033[1m\033[93m[2] STUDENT LOADS PROBLEMS\033[0m")
         student_problems = load_problems_from_dir(
             str(step_problem_dir), args.domain_path,
             len(consistent_problems),
@@ -591,6 +596,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
         # ------------------------------------------------------------------
         # 3. Student PPO update
         # ------------------------------------------------------------------
+        print(f"\033[1m\033[93m[3] STUDENT PPO UPDATE\033[0m")
         metrics = student_trainer.train_one_step(
             problems=student_problems,
             test_problems=test_problems,
@@ -601,6 +607,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
         # 4. Inject difficulty rewards into NeSIG trajectories
         #    (using the NOW-UPDATED student)
         # ------------------------------------------------------------------
+        print(f"\033[1m\033[93m[4] DIFFICULTY REWARD INJECTION\033[0m")
         last_batch_consistent_problems = [
             p for p, info in zip(last_problems, last_problem_info)
             if info['consistency']
@@ -621,6 +628,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
         # 5. Teacher PPO update (every teacher_update_period steps)
         # ------------------------------------------------------------------
         if current_step % args.teacher_update_period == 0:
+            print(f"\033[1m\033[93m[5] TEACHER PPO UPDATE\033[0m")
             with torch.no_grad():
                 init_trajectories, goal_trajectories = nesig_trainer._process_trajectories(
                     nesig_trajectories, last_problem_info,  # ← was problem_info_list
@@ -631,11 +639,9 @@ def train(args, experiment_id, experiment_folder_path: Path):
             nesig_trainer._perform_train_step(goal_policy, goal_trajectories)
 
         # ------------------------------------------------------------------
-        # 6. Logging and checkpointing
+        # Checkpointing
         # ------------------------------------------------------------------
-        if current_step % args.log_period == 0:
-            student_trainer.log_curriculum_level(0, current_step)
-
+        print(f"\033[1m\033[90mCHECKPOINTING\033[0m")
         replay_buffer.save(experiment_folder_path)
         save_experiment_info(experiment_info_path, args, experiment_id, current_step)
 
@@ -673,6 +679,8 @@ def main(args):
     experiment_folder_path = Path(args.experiments_dir) / experiment_id
 
     train(args, experiment_id, experiment_folder_path)
+    
+    # TODO: El test está integrado en train, cambiarlo 
 
     print("\n>>> Done!")
     print(f">>> Experiment ID: {experiment_id}\n")

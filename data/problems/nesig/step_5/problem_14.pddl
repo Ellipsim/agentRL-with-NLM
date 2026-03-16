@@ -1,0 +1,45 @@
+(define (problem problem_14)
+
+(:domain BLOCKS)
+
+(:objects
+	obj0 obj1 obj2 obj3 obj4 obj5 obj6 obj7 obj8 obj9 obj10 obj11 obj12 obj13 obj14 obj15 obj16 obj17 obj18 obj19 - block
+)
+
+(:init
+	(clear obj0)
+	(clear obj1)
+	(clear obj2)
+	(clear obj5)
+	(clear obj7)
+	(clear obj11)
+	(clear obj12)
+	(clear obj16)
+	(clear obj19)
+	(handempty)
+	(on obj4 obj3)
+	(on obj5 obj4)
+	(on obj7 obj6)
+	(on obj9 obj8)
+	(on obj10 obj9)
+	(on obj11 obj10)
+	(on obj14 obj13)
+	(on obj15 obj14)
+	(on obj16 obj15)
+	(on obj18 obj17)
+	(on obj19 obj18)
+	(ontable obj0)
+	(ontable obj1)
+	(ontable obj2)
+	(ontable obj3)
+	(ontable obj6)
+	(ontable obj8)
+	(ontable obj12)
+	(ontable obj13)
+	(ontable obj17)
+)
+
+(:goal (and
+	(on obj9 obj7)
+))
+)
