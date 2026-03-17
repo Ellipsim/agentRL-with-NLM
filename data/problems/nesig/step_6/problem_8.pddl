@@ -7,21 +7,18 @@
 )
 
 (:init
-	(clear obj0)
-	(clear obj3)
+	(clear obj2)
 	(clear obj6)
 	(handempty)
+	(on obj1 obj0)
 	(on obj2 obj1)
-	(on obj3 obj2)
+	(on obj4 obj3)
 	(on obj5 obj4)
 	(on obj6 obj5)
 	(ontable obj0)
-	(ontable obj1)
-	(ontable obj4)
+	(ontable obj3)
 )
 
 (:goal (and
-	(on obj2 obj1)
-	(on obj5 obj4)
 ))
 )

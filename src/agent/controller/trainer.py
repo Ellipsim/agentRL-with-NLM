@@ -878,6 +878,11 @@ class PolicyTrainer:
 
         # --- Process + PPO update ---
         samples = self._process_trajectories(trajectories, problem_info)
+        # Skip if samples are too little
+        if len(samples) < self.args.min_samples_train:
+            print(f"    Skipping PPO: {len(samples)} < {self.args.min_samples_train}")
+            return metrics  
+        
         self._perform_train_step(samples)
         self.save_policy(save_best=False)
         self.policy.curr_logging_it += 1
@@ -890,7 +895,7 @@ class PolicyTrainer:
                 )
 
         # --- Periodic test evaluation ---
-        if self.args.test_period != -1 and current_step % self.args.test_period == 0:
+        if test_problems and self.args.test_period != -1 and current_step % self.args.test_period == 0:
             with torch.no_grad():
                 _, test_info, _, _ = self._solve_and_collect_trajectories(
                     test_problems, self.args.max_actions_test

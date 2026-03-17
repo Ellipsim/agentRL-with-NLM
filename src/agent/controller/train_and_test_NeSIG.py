@@ -102,26 +102,39 @@ def parse_arguments():
     parser.add_argument('--nesig-domain', type=str, default='blocksworld',
                         choices=tuple(DOMAIN_INFO.keys()),
                         help="NeSIG domain name (must match domain-path)")
+    
+    # ---- Test problems evaluation ----
+    parser.add_argument('--test-problems-dir', type=str, default='./data/problems/test',
+                            help="Directory with test problems. Used as-is unless "
+                                "--generate-test-problems is set.")
+    parser.add_argument('--generate-test-problems', action='store_true',
+                            help="Generate test problems using the binary generator into "
+                                "--test-problems-dir instead of using existing ones.")
+    parser.add_argument('--test-min-blocks', type=int, default=2)
+    parser.add_argument('--test-max-blocks', type=int, default=30)
+    parser.add_argument('--generator-path', type=str, default='./problem_generator/pddl-generators/blocksworld/blocksworld')
+    parser.add_argument('--test-period', type=int, default=20,
+                            help="Steps between student test evaluations")
+    parser.add_argument('--num-problems-test', type=int, default=300)
+    parser.add_argument('--max-actions-test', type=int, default=None)
+    parser.add_argument('--data-dir', type=str, default='./data/problems/nesig')
+
 
     # ---- NeSIG teacher ----
     parser.add_argument('--max-init-actions-train', type=int, default=10,
                         help="Max init actions for NeSIG problem generation (controls problem size)")
     parser.add_argument('--max-goal-actions-train', type=int, default=10,
-                        help="Max goal actions for NeSIG problem generation")
-    parser.add_argument('--teacher-update-period', type=int, default=1,
-                        help="Update teacher every N student iterations")
+                            help="Max goal actions for NeSIG problem generation")
     parser.add_argument('--nesig-ppo-epochs', type=int, default=3,
-                        help="PPO epochs for teacher update")
+                            help="PPO epochs for teacher update")
     parser.add_argument('--nesig-lr', type=float, default=1e-3,
-                        help="Learning rate for teacher")
+                            help="Learning rate for teacher")
     parser.add_argument('--diversity-threshold', type=float, default=0.75)
     parser.add_argument('--perc-problems-diversity', type=float, default=1.0)
     parser.add_argument('--r-eventual-consistency', type=float, default=-1.0)
-    parser.add_argument('--consistency-evaluator', choices=('dummy', 'domain'),
-                        default='domain')
+    parser.add_argument('--consistency-evaluator', choices=('dummy', 'domain'), default='domain')
     parser.add_argument('--policy-type', choices=('random', 'PPO'), default='PPO')
-    parser.add_argument('--difficulty-penalty', type=float, default=0.0,
-                        help="Difficulty reward given to NeSIG when student fails")
+    
     
     # ---- Student ----
     parser.add_argument('--reward-goal-reached', type=float, default=1.0)
@@ -131,38 +144,33 @@ def parse_arguments():
                         help="Action budget for student during training "
                              "(defaults to max-actions-test if not set)")
 
-    # ---- Shared training ----
+    # ---- Shared training ----    
     parser.add_argument('--steps', type=int, default=200,
-                        help="Total co-training iterations")
+                            help="Total co-training iterations")
+    parser.add_argument('--teacher-update-period', type=int, default=1,
+                            help="Update teacher every N student iterations")
+    parser.add_argument('--difficulty-penalty', type=float, default=0.0,
+                            help="Difficulty reward given to NeSIG when student fails")
     parser.add_argument('--num-problems-train', type=int, default=20,
-                        help="Problems generated per iteration")
-    parser.add_argument('--batch-size', type=int, default=32)
+                            help="Problems generated per iteration")
+    parser.add_argument('--nesig-warmup-steps', type=int, default=30,
+                            help="NeSIG-only warmup steps before co-training. Set 0 to disable.")
     parser.add_argument('--min-samples-train', type=int, default=10)
+    parser.add_argument('--problem-generation-period', type=int, default=None,
+                    help="Generate new problems every N steps. "
+                         "Defaults to --teacher-update-period if not set.")
+
+    
+    parser.add_argument('--batch-size', type=int, default=32)
     parser.add_argument('--grad-clip', type=float, default=0.5)
     parser.add_argument('--disc-factor', type=float, default=0.99)
     parser.add_argument('--gae-factor', type=float, default=0.95)
+
+    # --- Training Set Up ---
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--run-id', type=int, default=0)
     parser.add_argument('--device', type=str, choices=('gpu', 'cpu'), default='gpu')
-    parser.add_argument('--nesig-warmup-steps', type=int, default=30,
-                    help="NeSIG-only warmup steps before co-training. Set 0 to disable.")
-
-    # ---- Test evaluation ----
-    parser.add_argument('--test-problems-dir', type=str, default='./data/problems/test',
-                        help="Directory with test problems. Used as-is unless "
-                             "--generate-test-problems is set.")
-    parser.add_argument('--generate-test-problems', action='store_true',
-                        help="Generate test problems using the binary generator into "
-                             "--test-problems-dir instead of using existing ones.")
-    parser.add_argument('--test-min-blocks', type=int, default=2)
-    parser.add_argument('--test-max-blocks', type=int, default=30)
-    parser.add_argument('--generator-path', type=str,
-                        default='./problem_generator/pddl-generators/blocksworld/blocksworld')
-    parser.add_argument('--test-period', type=int, default=20,
-                        help="Steps between student test evaluations")
-    parser.add_argument('--num-problems-test', type=int, default=300)
-    parser.add_argument('--max-actions-test', type=int, default=None)
-    parser.add_argument('--data-dir', type=str, default='./data/problems/nesig')
+    
 
     # ---- Training problem accumulation ----
     parser.add_argument('--max-generation-attempts', type=int, default=30,
@@ -205,6 +213,8 @@ def validate_args(args):
     args.domain_path = str(Path(args.domain_path).resolve())
     if not Path(args.domain_path).exists():
         raise ValueError(f"Domain file not found: {args.domain_path}")
+    if args.problem_generation_period is None:
+        args.problem_generation_period = args.teacher_update_period
     args.policy_type = 'PPO'
     return args
 
@@ -552,22 +562,38 @@ def train(args, experiment_id, experiment_folder_path: Path):
 
     current_step = last_train_it + 1
 
+    # Initialize problem cache before the loop
+    cached_consistent_problems = []
+    cached_last_problems = []
+    cached_last_problem_info = []
+    cached_nesig_trajectories = []
+
     while current_step <= args.steps:
         print(f"\033[1m\033[94mStep {current_step}/{args.steps}\033[0m")
 
         # ------------------------------------------------------------------
-        # 1. Teacher generates problems
+        # 1. Teacher generates problems (every problem_generation_period steps)
         # ------------------------------------------------------------------
-        print(f"\033[1m\033[93m[1] TEACHER GENERATES PROBLEMS\033[0m")
-        print(f"  Generating {args.num_problems_train} consistent problems...")
-        consistent_problems, last_problems, last_problem_info, nesig_trajectories = \
-            accumulate_consistent_problems(
-                nesig_trainer=nesig_trainer,
-                target=args.num_problems_train,
-                init_actions=args.max_init_actions_train,
-                goal_actions=args.max_goal_actions_train,
-                max_attempts=args.max_generation_attempts,
-            )
+        if current_step % args.problem_generation_period == 1 or not cached_consistent_problems:
+            print(f"\033[1m\033[93m[1] TEACHER GENERATES PROBLEMS\033[0m")
+            print(f"  Generating {args.num_problems_train} consistent problems...")
+            cached_consistent_problems, cached_last_problems, \
+            cached_last_problem_info, cached_nesig_trajectories = \
+                accumulate_consistent_problems(
+                    nesig_trainer=nesig_trainer,
+                    target=args.num_problems_train,
+                    init_actions=args.max_init_actions_train,
+                    goal_actions=args.max_goal_actions_train,
+                    max_attempts=args.max_generation_attempts,
+                )
+        else:
+            print(f"\033[1m\033[93m[1] REUSING CACHED PROBLEMS (next generation at step "
+                  f"{current_step + (args.problem_generation_period - current_step % args.problem_generation_period)})\033[0m")
+
+        consistent_problems = cached_consistent_problems
+        last_problems = cached_last_problems
+        last_problem_info = cached_last_problem_info
+        nesig_trajectories = cached_nesig_trajectories
 
         if not consistent_problems:
             print("  No consistent problems generated after max attempts, skipping step.")
