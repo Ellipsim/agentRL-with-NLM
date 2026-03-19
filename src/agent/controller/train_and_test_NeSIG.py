@@ -417,11 +417,22 @@ def accumulate_consistent_problems(
     goal_actions: int,
     max_attempts: int,
 ) -> Tuple[list, list, list]:
+    """
+    Keep asking NeSIG to generate problems until we have `target` consistent
+    ones or `max_attempts` batches have been generated, whichever comes first.
+
+    Returns
+    -------
+    consistent_problems : List[NeSIGProblem]
+        Consistent problems trimmed to target.
+    consistent_infos : List[Dict]
+        Info dicts for each consistent problem.
+    consistent_trajectories : List
+        Trajectories for each consistent problem.
+    """
     consistent_problems = []
     consistent_infos = []
-    consistent_trajectories_flat = []  # only consistent ones
-    
-    last_problems, last_info, last_trajectories = [], [], []
+    consistent_trajectories = []
     attempts = 0
 
     while len(consistent_problems) < target and attempts < max_attempts:
@@ -433,42 +444,36 @@ def accumulate_consistent_problems(
                     goal_actions,
                 )
 
-        new_consistent_problems = []
-        new_consistent_infos = []
-        new_consistent_trajectories = []
+        new_consistent = [
+            (p, info, traj)
+            for p, info, traj in zip(problems, problem_info_list, trajectories)
+            if info['consistency']
+        ]
 
-        for p, info, traj in zip(problems, problem_info_list, trajectories):
-            if info['consistency']:
-                new_consistent_problems.append(p)
-                new_consistent_infos.append(info)
-                new_consistent_trajectories.append(traj)
+        consistent_problems.extend(p for p, _, _ in new_consistent)
+        consistent_infos.extend(info for _, info, _ in new_consistent)
+        consistent_trajectories.extend(traj for _, _, traj in new_consistent)
 
-        consistent_problems.extend(new_consistent_problems)
-        consistent_infos.extend(new_consistent_infos)
-        consistent_trajectories_flat.extend(new_consistent_trajectories)
-
-        last_problems, last_info, last_trajectories = problems, problem_info_list, trajectories
         attempts += 1
 
-        if not new_consistent_problems:
+        if not new_consistent:
             print(f"    [generation] attempt {attempts}/{max_attempts}: "
                   f"0 consistent problems")
         else:
             print(f"    [generation] attempt {attempts}/{max_attempts}: "
-                  f"{len(new_consistent_problems)} consistent, "
+                  f"{len(new_consistent)} consistent, "
                   f"total={len(consistent_problems)}/{target}")
 
     if len(consistent_problems) < target:
         print(f"  Warning: only {len(consistent_problems)}/{target} consistent "
               f"problems after {max_attempts} attempts")
-
-    if len(consistent_problems) > target:
+    elif len(consistent_problems) > target:
         print(f"  Trimming {len(consistent_problems)} → {target} problems")
         consistent_problems = consistent_problems[:target]
         consistent_infos = consistent_infos[:target]
-        consistent_trajectories_flat = consistent_trajectories_flat[:target]
+        consistent_trajectories = consistent_trajectories[:target]
 
-    return consistent_problems, consistent_infos, consistent_trajectories_flat, last_problems, last_info, last_trajectories
+    return consistent_problems, consistent_infos, consistent_trajectories
 
 # =====================================================================
 # Main Training Loop
@@ -520,14 +525,11 @@ def train(args, experiment_id, experiment_folder_path: Path):
         init_policy.to('cuda')
         goal_policy.to('cuda')
 
-    # ---- Inject student difficulty evaluator into NeSIG ----
+    # ---- Student performance evaluator for NeSIG reward ----
     difficulty_evaluator = StudentDifficultyEvaluator(
-        student_solver=student_solver,
-        max_actions=args.max_actions_test,
-        domain_path=args.domain_path,
+        max_actions=args.max_actions_train,
         penalty=args.difficulty_penalty,
     )
-    problem_generator.difficulty_evaluator = difficulty_evaluator
 
     # ---- Build trainers ----
     student_trainer = StudentTrainer(
@@ -603,7 +605,6 @@ def train(args, experiment_id, experiment_folder_path: Path):
     replay_buffer.load(experiment_folder_path)
 
     # ---- Test set (generated before training) ----
-    # TODO: num_test quizá tiene más sentido que se limite al número especificado
     test_problems_dir = Path(args.test_problems_dir)
     if args.generate_test_problems:
         print(f"\nGenerating test problems into {test_problems_dir}...")
@@ -651,10 +652,8 @@ def train(args, experiment_id, experiment_folder_path: Path):
     current_step = last_train_it + 1
 
     # Initialize problem cache before the loop
-    cached_consistent_problems = []
-    cached_last_problems = []
-    cached_last_problem_info = []
-    cached_nesig_trajectories = []
+    consistent_problems = []
+    cached_step_problem_dir = None
 
     while current_step <= args.steps:
         print(f"\033[1m\033[94mStep {current_step}/{args.steps}\033[0m")
@@ -662,11 +661,10 @@ def train(args, experiment_id, experiment_folder_path: Path):
         # ------------------------------------------------------------------
         # 1. Teacher generates problems (every problem_generation_period steps)
         # ------------------------------------------------------------------
-        if current_step % args.problem_generation_period == 1 or not cached_consistent_problems:
+        if current_step % args.problem_generation_period == 1 or not consistent_problems:
             print(f"\033[1m\033[93m[1] TEACHER GENERATES PROBLEMS\033[0m")
             print(f"  Generating {args.num_problems_train} consistent problems...")
-            cached_consistent_problems, cached_consistent_infos, cached_consistent_trajectories, \
-            cached_last_problems, cached_last_problem_info, cached_nesig_trajectories = \
+            consistent_problems, consistent_infos, consistent_trajectories = \
                 accumulate_consistent_problems(
                     nesig_trainer=nesig_trainer,
                     target=args.num_problems_train,
@@ -678,69 +676,108 @@ def train(args, experiment_id, experiment_folder_path: Path):
             print(f"\033[1m\033[93m[1] REUSING CACHED PROBLEMS (next generation at step "
                   f"{current_step + (args.problem_generation_period - current_step % args.problem_generation_period)})\033[0m")
 
-        # Assign from cache
-        consistent_problems = cached_consistent_problems
-        consistent_infos = cached_consistent_infos
-        consistent_trajectories = cached_consistent_trajectories
-        last_problems = cached_last_problems
-        last_problem_info = cached_last_problem_info
-        nesig_trajectories = cached_nesig_trajectories
-
         if not consistent_problems:
             print("  No consistent problems generated after max attempts, skipping step.")
             continue
 
         # Save consistent problems to disk for student
-        step_problem_dir = Path(args.data_dir) / f'step_{current_step}'
-        step_problem_dir.mkdir(parents=True, exist_ok=True)
-        for i, p in enumerate(consistent_problems):
-            with open(step_problem_dir / f'problem_{i}.pddl', 'w') as f:
-                f.write(p.dump_to_pddl(f'problem_{i}'))
+        if current_step % args.problem_generation_period == 1 or not consistent_problems:
+            step_problem_dir = Path(args.data_dir) / f'step_{current_step}'
+            step_problem_dir.mkdir(parents=True, exist_ok=True)
+            for i, p in enumerate(consistent_problems):
+                with open(step_problem_dir / f'problem_{i}.pddl', 'w') as f:
+                    f.write(p.dump_to_pddl(f'problem_{i}'))
+            replay_buffer.register_dir(str(step_problem_dir))
+            cached_step_problem_dir = step_problem_dir
+        else: 
+            step_problem_dir = cached_step_problem_dir
 
         # ------------------------------------------------------------------
-        # 2. Student attempts to solve NeSIG problems
+        # 2. Student loads problems
         # ------------------------------------------------------------------
         print(f"\033[1m\033[93m[2] STUDENT LOADS PROBLEMS\033[0m")
+
+        # TODO: Check side-effects
+        # student_problems may not correspond 1-to-1 with consistent_problems because of the replay buffer,
+        # so we load the separtely to obtain the trayectories of both later
+        nesig_only_problems = load_problems_from_dir(
+            str(step_problem_dir), args.domain_path,
+            len(consistent_problems),
+            max_actions=args.max_actions_train,
+            replay_buffer=None,   # ← no replay
+            replay_prob=0.0,
+        )
+
         student_problems = load_problems_from_dir(
             str(step_problem_dir), args.domain_path,
             len(consistent_problems),
-            max_actions=args.max_actions_test,
+            max_actions=args.max_actions_train,
             replay_buffer=replay_buffer,
             replay_prob=args.replay_prob,
         )
-        replay_buffer.register_dir(str(step_problem_dir))
 
         # ------------------------------------------------------------------
-        # 3. Student PPO update
+        # 3. Student attempts problems → trajectories + difficulty signal
+        #    (BEFORE PPO update so difficulty is unbiased)
         # ------------------------------------------------------------------
-        print(f"\033[1m\033[93m[3] STUDENT PPO UPDATE\033[0m")
-        metrics = student_trainer.train_one_step(
-            problems=student_problems,
-            test_problems=test_problems,
-            current_step=current_step,
-        )
+        print(f"\033[1m\033[93m[3] STUDENT SOLVES + DIFFICULTY\033[0m")
 
-        # ------------------------------------------------------------------
-        # 4. Inject difficulty rewards into NeSIG trajectories
-        #    (using the NOW-UPDATED student)
-        # ------------------------------------------------------------------
-        print(f"\033[1m\033[93m[4] DIFFICULTY REWARD INJECTION\033[0m")
-
+        # Trajectories with replay buffer for student
         with torch.no_grad():
-            _, new_difficulty_rewards = \
-                difficulty_evaluator.get_difficulty(consistent_problems)
+            _, problem_info, trajectories, _ = \
+                student_trainer._solve_and_collect_trajectories(
+                    student_problems, args.max_actions_train
+                )
+            
+        # Trajectories without replay buffer for nesig feedback    
+        with torch.no_grad():
+            _, nesig_problem_info, _, _ = \
+                student_trainer._solve_and_collect_trajectories(
+                    nesig_only_problems, args.max_actions_train
+                )
 
-        # Inject into accumulated consistent trajectories
+        new_difficulty_rewards = difficulty_evaluator.get_difficulty(nesig_problem_info)
+
+        num_solved = sum(1 for d in new_difficulty_rewards if d > 0)
+        mean_diff = sum(new_difficulty_rewards) / len(new_difficulty_rewards) \
+            if new_difficulty_rewards else 0
+        print(f"  [NESIG-STUDENT METRICS]")
+        print(f"    Consistency rate : {len(consistent_problems)}/{args.num_problems_train}")
+        print(f"    Student solved   : {num_solved}/{len(new_difficulty_rewards)}")
+        print(f"    Mean difficulty  : {mean_diff:.3f}  (0=trivial, 1=hard, penalty=failed)")
+
+        # Inject difficulty into NeSIG trajectories
         for traj, diff_reward in zip(consistent_trajectories, new_difficulty_rewards):
             if traj:
                 traj[-1]['difficulty_reward'] = diff_reward
 
-        num_solved = sum(1 for d in new_difficulty_rewards if d > 0)
-        mean_diff = sum(new_difficulty_rewards) / len(new_difficulty_rewards) if new_difficulty_rewards else 0
-        print(f"  [NESIG-STUDENT METRICS]")
-        print(f"    Consistency rate    : {len(consistent_problems)}/{args.num_problems_train}")
-        print(f"    Student solved      : {num_solved}/{len(new_difficulty_rewards)}")
-        print(f"    Mean difficulty     : {mean_diff:.3f}")
+        # ------------------------------------------------------------------
+        # 4. Student PPO update
+        # ------------------------------------------------------------------
+        print(f"\033[1m\033[93m[4] STUDENT PPO UPDATE\033[0m")
+        samples = student_trainer._process_trajectories(trajectories, problem_info)
+        if len(samples) >= args.min_samples_train:
+            student_trainer._perform_train_step(samples)
+            student_trainer.save_policy(save_best=False)
+            student_trainer.policy.curr_logging_it += 1
+            if current_step % args.log_period == 0:
+                with torch.no_grad():
+                    student_trainer.log_metrics(
+                        'train', current_step, problem_info, trajectories=trajectories
+                    )
+            if test_problems and args.test_period != -1 \
+                    and current_step % args.test_period == 0:
+                with torch.no_grad():
+                    _, test_info, _, _ = student_trainer._solve_and_collect_trajectories(
+                        test_problems, args.max_actions_test
+                    )
+                test_metrics = student_trainer.log_metrics('test', current_step, test_info)
+                print(f"  \033[1m\033[95m[TEST step {current_step}]\033[0m "
+                      f"success={test_metrics['Success rate']:.1%}  "
+                      f"efficiency={test_metrics['Mean efficiency']:.3f}  "
+                      f"solved={int(test_metrics['Num successful'])}/{len(test_problems)}")
+        else:
+            print(f"    Skipping PPO: {len(samples)} < {args.min_samples_train}")
 
         # ------------------------------------------------------------------
         # 5. Teacher PPO update (every teacher_update_period steps)

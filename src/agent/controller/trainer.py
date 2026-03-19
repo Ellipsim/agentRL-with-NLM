@@ -296,7 +296,8 @@ class PolicyTrainer:
         if len(samples) > 1:
             advantages = [s['advantage'] for s in samples]
             mean_adv = sum(advantages) / len(advantages)
-            std_adv = (sum((a - mean_adv) ** 2 for a in advantages) / len(advantages)) ** 0.5 + 1e-8
+            std_adv = (sum((a - mean_adv) ** 2 for a in advantages) / len(advantages)) ** 0.5
+            std_adv = max(std_adv, 0.1)
             for s in samples:
                 s['advantage'] = (s['advantage'] - mean_adv) / std_adv
 
@@ -742,6 +743,68 @@ class PolicyTrainer:
 
         self.close_writers()
         return best_train_it, last_train_it, best_val_score
+    
+    def train_one_step(self, problems: List[PDDLProblem], test_problems: List[PDDLProblem],
+                   current_step: int) -> Dict:
+        """
+        Execute a single training step.
+
+        Parameters
+        ----------
+        problems : List[PDDLProblem]
+            Problems to train on this step.
+        test_problems : List[PDDLProblem]
+            Fixed test set for periodic evaluation.
+        current_step : int
+            Current global step (used for logging and test period check).
+
+        Returns
+        -------
+        metrics : Dict
+            Train metrics for this step. Includes 'test' key if test was run.
+        """
+        metrics = {}
+
+        # --- Collect trajectories ---
+        with torch.no_grad():
+            is_solved, problem_info, trajectories, elapsed = \
+                self._solve_and_collect_trajectories(problems, self.args.max_actions_train)
+
+        if not trajectories:
+            print("  No trajectories collected, skipping PPO update.")
+            return metrics
+
+        # --- Process + PPO update ---
+        samples = self._process_trajectories(trajectories, problem_info)
+        # Skip if samples are too little
+        if len(samples) < self.args.min_samples_train:
+            print(f"    Skipping PPO: {len(samples)} < {self.args.min_samples_train}")
+            return metrics  
+        
+        self._perform_train_step(samples)
+        self.save_policy(save_best=False)
+        self.policy.curr_logging_it += 1
+
+        # --- Logging ---
+        if current_step % self.args.log_period == 0:
+            with torch.no_grad():
+                metrics['train'] = self.log_metrics(
+                    'train', current_step, problem_info, trajectories=trajectories
+                )
+
+        # --- Periodic test evaluation ---
+        if test_problems and self.args.test_period != -1 and current_step % self.args.test_period == 0:
+            with torch.no_grad():
+                _, test_info, _, _ = self._solve_and_collect_trajectories(
+                    test_problems, self.args.max_actions_test
+                )
+            test_metrics = self.log_metrics('test', current_step, test_info)
+            metrics['test'] = test_metrics
+            print(f"  \033[1m\033[95m[TEST step {current_step}]\033[0m "
+                f"success={test_metrics['Success rate']:.1%}  "
+                f"efficiency={test_metrics['Mean efficiency']:.3f}")
+
+        return metrics
 
     # =====================================================================
     # Testing (adapted from NeSIG)
@@ -928,69 +991,4 @@ class PolicyTrainer:
 
         return step, level_beaten, False
     
-    # =====================================================================
-    # Train for Automatic Curriculum Learning with NeSIG (ACG model)
-    # =====================================================================
 
-    def train_one_step(self, problems: List[PDDLProblem], test_problems: List[PDDLProblem],
-                   current_step: int) -> Dict:
-        """
-        Execute a single training step without any curriculum logic.
-        Intended for use by external training loops (e.g. NeSIG co-training).
-
-        Parameters
-        ----------
-        problems : List[PDDLProblem]
-            Problems to train on this step.
-        test_problems : List[PDDLProblem]
-            Fixed test set for periodic evaluation.
-        current_step : int
-            Current global step (used for logging and test period check).
-
-        Returns
-        -------
-        metrics : Dict
-            Train metrics for this step. Includes 'test' key if test was run.
-        """
-        metrics = {}
-
-        # --- Collect trajectories ---
-        with torch.no_grad():
-            is_solved, problem_info, trajectories, elapsed = \
-                self._solve_and_collect_trajectories(problems, self.args.max_actions_train)
-
-        if not trajectories:
-            print("  No trajectories collected, skipping PPO update.")
-            return metrics
-
-        # --- Process + PPO update ---
-        samples = self._process_trajectories(trajectories, problem_info)
-        # Skip if samples are too little
-        if len(samples) < self.args.min_samples_train:
-            print(f"    Skipping PPO: {len(samples)} < {self.args.min_samples_train}")
-            return metrics  
-        
-        self._perform_train_step(samples)
-        self.save_policy(save_best=False)
-        self.policy.curr_logging_it += 1
-
-        # --- Logging ---
-        if current_step % self.args.log_period == 0:
-            with torch.no_grad():
-                metrics['train'] = self.log_metrics(
-                    'train', current_step, problem_info, trajectories=trajectories
-                )
-
-        # --- Periodic test evaluation ---
-        if test_problems and self.args.test_period != -1 and current_step % self.args.test_period == 0:
-            with torch.no_grad():
-                _, test_info, _, _ = self._solve_and_collect_trajectories(
-                    test_problems, self.args.max_actions_test
-                )
-            test_metrics = self.log_metrics('test', current_step, test_info)
-            metrics['test'] = test_metrics
-            print(f"  \033[1m\033[95m[TEST step {current_step}]\033[0m "
-                f"success={test_metrics['Success rate']:.1%}  "
-                f"efficiency={test_metrics['Mean efficiency']:.3f}")
-
-        return metrics
