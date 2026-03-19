@@ -567,6 +567,90 @@ class PolicyTrainer:
     # Main Training Loop (adapted from NeSIG)
     # =====================================================================
 
+    def train(self, start_it: int, end_it: int, train_problems_fn,
+            test_problems: List[PDDLProblem]) -> int:
+        """
+        Main training loop without validation.
+        Evaluates periodically on a fixed test set and keeps the last checkpoint.
+
+        Parameters
+        ----------
+        start_it : int
+            Starting iteration
+        end_it : int
+            Ending iteration  
+        train_problems_fn : callable
+            Function that returns list of training problems when called
+        test_problems : List[PDDLProblem]
+            Fixed test set for periodic evaluation
+
+        Returns
+        -------
+        last_train_it : int
+            Last training iteration completed
+        """
+        print(f"\n{'='*70}")
+        print(f"TRAINING SOLVER POLICY")
+        print(f"Iterations: {start_it} -> {end_it}")
+        print(f"Test      : every {self.args.test_period} steps ({len(test_problems)} problems)")
+        print(f"{'='*70}\n")
+
+        if self.device.type == 'cuda':
+            self.policy.to('cuda')
+
+        last_train_it = start_it
+        curr_train_it = start_it
+
+        while curr_train_it <= end_it:
+            print(f"\n\033[1m\033[94mIteration {curr_train_it}/{end_it}\033[0m")
+
+            # --- Collect trajectories ---
+            with torch.no_grad():
+                train_problems = train_problems_fn()
+                _, problem_info, trajectories, _ = self._solve_and_collect_trajectories(
+                    train_problems, self.args.max_actions_train
+                )
+
+            if not trajectories:
+                print("  No trajectories collected, skipping.")
+                curr_train_it += 1
+                continue
+
+            # --- Process + PPO update ---
+            samples = self._process_trajectories(trajectories, problem_info)
+            self._perform_train_step(samples)
+            self.save_policy(save_best=False)
+            last_train_it = curr_train_it
+
+            # --- Logging ---
+            if curr_train_it % self.args.log_period == 0:
+                with torch.no_grad():
+                    self.log_metrics('train', curr_train_it, problem_info,
+                                    trajectories=trajectories)
+
+            # --- Periodic test evaluation ---
+            if test_problems and self.args.test_period != -1 \
+                    and curr_train_it % self.args.test_period == 0:
+                with torch.no_grad():
+                    _, test_info, _, _ = self._solve_and_collect_trajectories(
+                        test_problems, self.args.max_actions_test
+                    )
+                test_metrics = self.log_metrics('test', curr_train_it, test_info)
+                print(f"  \033[1m\033[95m[TEST step {curr_train_it}]\033[0m "
+                    f"success={test_metrics['Success rate']:.1%}  "
+                    f"efficiency={test_metrics['Mean efficiency']:.3f}  "
+                    f"solved={int(test_metrics['Num successful'])}/{len(test_problems)}")
+
+            self.policy.curr_logging_it += 1
+            curr_train_it += 1
+
+        print(f"\n{'='*70}")
+        print(f"Training complete. Last iteration: {last_train_it}")
+        print(f"{'='*70}\n")
+
+        self.close_writers()
+        return last_train_it
+
     def train_and_val(self, start_it: int, end_it: int, 
                       train_problems_fn, val_problems_fn) -> Tuple[int, int]:
         """
@@ -740,7 +824,7 @@ class PolicyTrainer:
         print(f"{'='*70}\n")
 
     # =====================================================================
-    # Automatic Curriculum Learning
+    # Train for Automatic Curriculum Learning (ACG model)
     # =====================================================================
 
     def train_acl_level(self, problems, test_problems, start_step, max_steps,
@@ -844,7 +928,10 @@ class PolicyTrainer:
 
         return step, level_beaten, False
     
-    
+    # =====================================================================
+    # Train for Automatic Curriculum Learning with NeSIG (ACG model)
+    # =====================================================================
+
     def train_one_step(self, problems: List[PDDLProblem], test_problems: List[PDDLProblem],
                    current_step: int) -> Dict:
         """
@@ -902,7 +989,7 @@ class PolicyTrainer:
                 )
             test_metrics = self.log_metrics('test', current_step, test_info)
             metrics['test'] = test_metrics
-            print(f"  \033[1m\033[92m[TEST step {current_step}]\033[0m "
+            print(f"  \033[1m\033[95m[TEST step {current_step}]\033[0m "
                 f"success={test_metrics['Success rate']:.1%}  "
                 f"efficiency={test_metrics['Mean efficiency']:.3f}")
 

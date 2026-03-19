@@ -7,12 +7,12 @@
 )
 
 (:init
-	(clear obj1)
+	(clear obj0)
 	(clear obj2)
 	(handempty)
-	(on obj1 obj0)
+	(on obj2 obj1)
 	(ontable obj0)
-	(ontable obj2)
+	(ontable obj1)
 )
 
 (:goal (and

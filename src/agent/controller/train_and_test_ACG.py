@@ -85,6 +85,16 @@ def parse_arguments():
     parser.add_argument('--data-dir', type=str, default='./data/problems/curriculum',
                     help="Directory to store generated problems")
     
+    # ---- Test Set ----
+    parser.add_argument('--test-problems-dir', type=str, default=None,
+                        help="Directory with test problems. If not set, defaults to "
+                            "--data-dir/test. When --generate-test-problems is set, "
+                            "existing problems in this folder will be overwritten.")
+    parser.add_argument('--generate-test-problems', action='store_true',
+                    help="Generate test problems using the binary generator into "
+                         "--test-problems-dir instead of using existing ones.")
+
+
     # ---- Generator ----
     parser.add_argument('--min-blocks-start', type=int, default=2,
                     help="Minimum number of blocks at level 1")
@@ -210,6 +220,8 @@ def validate_args(args):
         raise ValueError("--replay-buffer-size must be > 0")
     if args.train_mode == "skip" and args.test_mode == "skip":
         raise ValueError("Cannot skip both training and testing")
+    if args.test_problems_dir is None:
+        args.test_problems_dir = str(Path(args.data_dir) / 'test')
 
     args.domain_path = str(Path(args.domain_path).resolve())
     args.generator_path = str(Path(args.generator_path).resolve())
@@ -478,21 +490,40 @@ def train(args, parser, experiment_id, experiment_folder_path: Path):
         print("Training already complete.")
         return
 
-    # --- Generate fixed test set once ---
-    test_problems_dir = Path(args.data_dir) / 'test'
-    if not test_problems_dir.exists() or not list(test_problems_dir.glob('*.pddl')):
-        print("\nGenerating fixed test set...")
+    # --- Test set ---
+    test_problems_dir = Path(args.test_problems_dir)
+
+    if args.generate_test_problems:
+        print(f"\nGenerating fixed test set into {test_problems_dir}...")
         generate_problems(
             args.generator_path, str(test_problems_dir),
             args.num_problems_test,
             args.test_min_blocks, args.test_max_blocks,
             seed_start=999454,
         )
+    elif not list(test_problems_dir.glob('*.pddl')):
+        raise FileNotFoundError(
+            f"No .pddl files found in {test_problems_dir}. "
+            f"Use --generate-test-problems to generate them."
+        )
+    else:
+        print(f"\nUsing existing test problems from {test_problems_dir}")
 
-    # Load test problems
+    available = len(list(test_problems_dir.glob('*.pddl')))
+    if args.generate_test_problems:
+        num_test = args.num_problems_test
+    else:
+        num_test = min(args.num_problems_test, available)
+        if available > args.num_problems_test:
+            print(f"  Note: {available} problems available, loading {num_test} "
+                f"(capped by --num-problems-test)")
+        elif available < args.num_problems_test:
+            print(f"  Warning: only {available} problems available, "
+                f"requested {args.num_problems_test}")
+
     test_problems = load_problems_from_dir(
         str(test_problems_dir), args.domain_path,
-        args.num_problems_test,
+        num_test,
         max_actions=args.max_actions_test,
     )
 
@@ -517,7 +548,7 @@ def train(args, parser, experiment_id, experiment_folder_path: Path):
     print(f"TRAINING  (ACL + curriculum + replay)")
     print(f"Steps : {last_train_it + 1} -> {args.steps}")
     print(f"Replay: prob={args.replay_prob}  buffer={args.replay_buffer_size}")
-    print(f"Test  : every {args.test_period} steps  ({args.num_problems_test} problems)")
+    print(f"Test  : every {args.test_period} steps  ({num_test} problems)")
     print(f"{'='*70}\n")
 
     current_step = last_train_it + 1
@@ -665,12 +696,24 @@ def run_final_test(args, parser, experiment_id, experiment_folder_path: Path):
     )
     trainer = PolicyTrainer(args, experiment_folder_path, problem_solver, policy, device)
 
-    test_problems_dir = Path(args.data_dir) / 'test'
+    test_problems_dir = Path(args.test_problems_dir)
+    available = len(list(test_problems_dir.glob('*.pddl')))
+    if args.generate_test_problems:
+        num_test = args.num_problems_test
+    else:
+        num_test = min(args.num_problems_test, available)
+        if available > args.num_problems_test:
+            print(f"  Note: {available} problems available, loading {num_test} "
+                f"(capped by --num-problems-test)")
+        elif available < args.num_problems_test:
+            print(f"  Warning: only {available} problems available, "
+                f"requested {args.num_problems_test}")
+
     def get_test_problems():
         return load_problems_from_dir(
-            str(test_problems_dir), 
-            args.domain_path, 
-            args.num_problems_test,
+            str(test_problems_dir),
+            args.domain_path,
+            num_test,
             max_actions=args.max_actions_test,
         )
 

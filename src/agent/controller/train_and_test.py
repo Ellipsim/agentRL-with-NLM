@@ -1,7 +1,7 @@
 """
 > train_and_test.py
 
-Main script for training, validating and testing the solver policy.
+Main script for training and testing the solver policy.
 
 NOTE: This script should be executed as a module:
   python -m src.agent.controller.train_and_test
@@ -9,7 +9,6 @@ NOTE: This script should be executed as a module:
 This script:
   1. Parses command-line arguments
   2. Trains the solver policy on problems
-  3. Validates the policy
   4. Tests the policy on test problems
 
 Key differences from NeSIG:
@@ -68,7 +67,7 @@ def parse_arguments():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-        description="Train, validate and test a solver policy."
+        description="Train and test a solver policy."
     )
 
     # ---- Domain and problem configuration ----
@@ -79,10 +78,6 @@ def parse_arguments():
     parser.add_argument(
         '--train-problems-dir', type=str, required=True,
         help="Directory containing training problems"
-    )
-    parser.add_argument(
-        '--val-problems-dir', type=str, required=True,
-        help="Directory containing validation problems"
     )
     parser.add_argument(
         '--test-problems-dir', type=str, required=True,
@@ -135,20 +130,6 @@ def parse_arguments():
         help="GAE factor (lambda) for advantage estimation"
     )
 
-    # ---- Validation configuration ----
-    parser.add_argument(
-        '--val-period', type=int, default=10,
-        help="Training steps between validation epochs (-1 = only at end)"
-    )
-    parser.add_argument(
-        '--num-problems-val', type=int, default=10,
-        help="Number of problems per validation epoch"
-    )
-    parser.add_argument(
-        '--max-actions-val', type=parse_max_actions, default=50,
-        help="Action budget per validation problem"
-    )
-
     # ---- Testing configuration ----
     parser.add_argument(
         '--num-problems-test', type=int, default=20,
@@ -157,6 +138,10 @@ def parse_arguments():
     parser.add_argument(
         '--max-actions-test', type=parse_max_actions, default=50,
         help="Action budget per test problem"
+    )
+    parser.add_argument(
+        '--test-period', type=int, default=10,
+        help="Training steps between tests"
     )
 
     # ---- Logging ----
@@ -235,8 +220,6 @@ def validate_args(args):
         raise ValueError("--steps must be > 0")
     if args.num_problems_train < 1:
         raise ValueError("--num-problems-train must be > 0")
-    if args.num_problems_val < 1:
-        raise ValueError("--num-problems-val must be > 0")
     if args.num_problems_test < 1:
         raise ValueError("--num-problems-test must be > 0")
     if args.batch_size < 1:
@@ -253,15 +236,12 @@ def validate_args(args):
     # Convert to absolute paths
     args.domain_path = str(Path(args.domain_path).resolve())
     args.train_problems_dir = str(Path(args.train_problems_dir).resolve())
-    args.val_problems_dir = str(Path(args.val_problems_dir).resolve())
     args.test_problems_dir = str(Path(args.test_problems_dir).resolve())
     
     if not Path(args.domain_path).exists():
         raise ValueError(f"Domain file not found: {args.domain_path}")
     if not Path(args.train_problems_dir).exists():
         raise ValueError(f"Train problems dir not found: {args.train_problems_dir}")
-    if not Path(args.val_problems_dir).exists():
-        raise ValueError(f"Val problems dir not found: {args.val_problems_dir}")
     if not Path(args.test_problems_dir).exists():
         raise ValueError(f"Test problems dir not found: {args.test_problems_dir}")
     
@@ -406,8 +386,8 @@ def create_policy(args, parser, last_train_it, experiment_folder_path, device):
 # Training and Testing
 # =====================================================================
 
-def train_and_val(args, parser, experiment_id, experiment_folder_path):
-    """Train and validate the policy."""
+def train(args, parser, experiment_id, experiment_folder_path):
+    """Train the policy."""
     experiment_info_path = experiment_folder_path / EXPERIMENT_INFO_FILENAME
     
     # Create experiment folder
@@ -463,24 +443,19 @@ def train_and_val(args, parser, experiment_id, experiment_folder_path):
             max_actions=args.max_actions_train
         )
     
-    def get_val_problems():
-        return load_problems_from_dir(
-            args.val_problems_dir, 
-            args.domain_path, 
-            args.num_problems_val,
-            max_actions=args.max_actions_val
-        )
-    
-    # Train
-    best_train_it, last_train_it, best_val_score = trainer.train_and_val(
+    test_problems = load_problems_from_dir(
+        args.test_problems_dir, args.domain_path,
+        args.num_problems_test, max_actions=args.max_actions_test,
+    )
+
+    last_train_it = trainer.train(
         start_it=last_train_it + 1,
         end_it=args.steps,
         train_problems_fn=get_train_problems,
-        val_problems_fn=get_val_problems
+        test_problems=test_problems,
     )
-    
-    # Save final progress
-    save_experiment_info(experiment_info_path, args, experiment_id, best_train_it, last_train_it, best_val_score)
+
+    save_experiment_info(experiment_info_path, args, experiment_id, last_train_it, last_train_it, -1)
 
 
 def test(args, parser, experiment_id, experiment_folder_path):
@@ -536,7 +511,7 @@ def test(args, parser, experiment_id, experiment_folder_path):
         # Convert args to dict
         args_dict = vars(args)
         
-        ckpt_path = experiment_folder_path / CKPTS_FOLDER_NAME / 'best.ckpt'
+        ckpt_path = experiment_folder_path / CKPTS_FOLDER_NAME / 'last.ckpt'
         policy = PPOSolverPolicy(
             args=args_dict,
             actor_class=NLMWrapperActor,
@@ -593,8 +568,8 @@ def main(args):
     parser = Parser()
     parser.parse_domain(args.domain_path)
     
-    # Train and validate
-    train_and_val(args, parser, experiment_id, experiment_folder_path)
+    # Train
+    train(args, parser, experiment_id, experiment_folder_path)
     
     # Test
     test(args, parser, experiment_id, experiment_folder_path)

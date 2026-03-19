@@ -23,18 +23,15 @@ Standard training loop. Requires pre-generated problem sets for train, validatio
 python -m src.agent.controller.train_and_test \
     --domain-path data/domains/blocksworld.pddl \
     --train-problems-dir data/problems/train \
-    --val-problems-dir data/problems/val \
     --test-problems-dir data/problems/test \
     --device gpu \
     --seed 1 \
     --steps 200 \
     --num-problems-train 30 \
-    --num-problems-val 100 \
     --num-problems-test 100 \
     --max-actions-train 116 \
-    --max-actions-val 116 \
     --max-actions-test 116 \
-    --val-period 20 \
+    --test-period 10 \
     --log-period 1 \
     --batch-size 32 \
     --disc-factor 0.99 \
@@ -112,6 +109,7 @@ python -m src.agent.controller.train_and_test_ACG \
     --test-period 20 \
     --check-advance-period 5 \
     --advance-threshold 0.8 \
+    --test-problems-dir data/problems/test \
     --max-levels 20 \
     --min-blocks-start 2 \
     --max-blocks-start 3 \
@@ -132,6 +130,8 @@ python -m src.agent.controller.train_and_test_ACG \
 | `--domain-path` | required | Path to `domain.pddl` |
 | `--generator-path` | `./problem_generator/.../blocksworld` | Path to the blocksworld generator binary |
 | `--data-dir` | `./data/problems/curriculum` | Directory where generated problems are stored |
+| `--generate-test-problems` | | Generate test problems using the binary generator into --test-problems-dir instead of using existing ones. |
+| `--test-problems-dir`| | Directory with test problems. If not set, defaults to --data-dir/test. When --generate-test-problems is set, existing problems in this folder will be overwritten. |
 
 #### Curriculum Configuration
 | Argument | Default | Description |

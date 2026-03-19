@@ -8,12 +8,11 @@
 
 (:init
 	(clear obj0)
-	(clear obj1)
 	(clear obj2)
 	(handempty)
+	(on obj2 obj1)
 	(ontable obj0)
 	(ontable obj1)
-	(ontable obj2)
 )
 
 (:goal (and

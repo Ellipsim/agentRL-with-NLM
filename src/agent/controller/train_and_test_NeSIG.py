@@ -351,6 +351,62 @@ def build_student(args, domain_parser, last_train_it, experiment_folder_path, de
     return student_policy, student_solver
 
 # =====================================================================
+# Metrics logger for shared training
+# =====================================================================
+
+def log_nesig_student_metrics(
+    student_trainer: StudentTrainer,
+    consistent_problems: list,
+    last_problem_info: list,
+    new_difficulty_rewards: list,
+    current_step: int,
+) -> None:
+    """Log NeSIG-student interaction metrics to TensorBoard and stdout."""
+
+    # ---- Problem size metrics ----
+    # NeSIG problems don't directly expose num_blocks, but we can infer
+    # from the number of objects in the problem info after student solves them
+    num_objects_list = [
+        info.get('num_objects', {})
+        for info in last_problem_info
+        if info.get('consistency', False)
+    ]
+    # Count total objects as proxy for problem size
+    problem_sizes = [sum(v for v in obj.values()) for obj in num_objects_list if obj]
+    mean_size = sum(problem_sizes) / len(problem_sizes) if problem_sizes else 0.0
+
+    # ---- Difficulty metrics ----
+    num_solved_by_student = sum(1 for d in new_difficulty_rewards if d > 0)
+    fraction_solved = num_solved_by_student / len(new_difficulty_rewards) if new_difficulty_rewards else 0.0
+    mean_difficulty = sum(new_difficulty_rewards) / len(new_difficulty_rewards) if new_difficulty_rewards else 0.0
+
+    # ---- Consistency rate from last batch ----
+    consistency_rate = sum(
+        1 for info in last_problem_info if info.get('consistency', False)
+    ) / len(last_problem_info) if last_problem_info else 0.0
+
+    # ---- Print summary ----
+    print(f"  \033[1m\033[96m[NESIG-STUDENT METRICS]\033[0m")
+    print(f"    Consistency rate    : {consistency_rate:.1%} "
+          f"({sum(1 for i in last_problem_info if i.get('consistency', False))}"
+          f"/{len(last_problem_info)} consistent)")
+    print(f"    Student solved      : {num_solved_by_student}/{len(new_difficulty_rewards)} "
+          f"({fraction_solved:.1%})")
+    print(f"    Mean difficulty     : {mean_difficulty:.3f}  "
+          f"(0=trivial, 1=hard, 0=failed)")
+    if problem_sizes:
+        print(f"    Mean problem size   : {mean_size:.1f} objects")
+
+    # ---- Log to TensorBoard ----
+    writer = student_trainer.writers['train']
+    writer.add_scalar('NeSIG/consistency_rate', consistency_rate, global_step=current_step)
+    writer.add_scalar('NeSIG/fraction_solved_by_student', fraction_solved, global_step=current_step)
+    writer.add_scalar('NeSIG/mean_difficulty_reward', mean_difficulty, global_step=current_step)
+    writer.add_scalar('NeSIG/num_consistent_problems', len(consistent_problems), global_step=current_step)
+    if problem_sizes:
+        writer.add_scalar('NeSIG/mean_problem_size', mean_size, global_step=current_step)
+
+# =====================================================================
 # Generator problem helper
 # =====================================================================
 
@@ -361,22 +417,10 @@ def accumulate_consistent_problems(
     goal_actions: int,
     max_attempts: int,
 ) -> Tuple[list, list, list]:
-    """
-    Keep asking NeSIG to generate problems until we have `target` consistent
-    ones or `max_attempts` batches have been generated, whichever comes first.
-
-    Returns
-    -------
-    consistent_problems : List[Tuple[NeSIGProblem, Dict]]
-        (problem, info) pairs for consistent problems only.
-    all_problems : List
-        Full problem list from last batch (for NeSIG trajectory injection).
-    all_problem_info : List
-        Full info list from last batch.
-    all_trajectories : List
-        Full trajectories from last batch.
-    """
     consistent_problems = []
+    consistent_infos = []
+    consistent_trajectories_flat = []  # only consistent ones
+    
     last_problems, last_info, last_trajectories = [], [], []
     attempts = 0
 
@@ -384,36 +428,47 @@ def accumulate_consistent_problems(
         with torch.no_grad():
             problems, problem_info_list, trajectories, _, _ = \
                 nesig_trainer._generate_problems_and_trajectories(
-                    target,  # ask for target each batch
+                    target,
                     init_actions,
                     goal_actions,
                 )
 
-        new_consistent = [
-            (p, info) for p, info in zip(problems, problem_info_list)
-            if info['consistency']
-        ]
-        consistent_problems.extend(new_consistent)
+        new_consistent_problems = []
+        new_consistent_infos = []
+        new_consistent_trajectories = []
+
+        for p, info, traj in zip(problems, problem_info_list, trajectories):
+            if info['consistency']:
+                new_consistent_problems.append(p)
+                new_consistent_infos.append(info)
+                new_consistent_trajectories.append(traj)
+
+        consistent_problems.extend(new_consistent_problems)
+        consistent_infos.extend(new_consistent_infos)
+        consistent_trajectories_flat.extend(new_consistent_trajectories)
+
         last_problems, last_info, last_trajectories = problems, problem_info_list, trajectories
         attempts += 1
 
-        if not new_consistent:
+        if not new_consistent_problems:
             print(f"    [generation] attempt {attempts}/{max_attempts}: "
                   f"0 consistent problems")
         else:
             print(f"    [generation] attempt {attempts}/{max_attempts}: "
-                  f"{len(new_consistent)} consistent, "
+                  f"{len(new_consistent_problems)} consistent, "
                   f"total={len(consistent_problems)}/{target}")
 
     if len(consistent_problems) < target:
         print(f"  Warning: only {len(consistent_problems)}/{target} consistent "
               f"problems after {max_attempts} attempts")
 
-    # Trim to target in case we overshot
-    if len(consistent_problems) > target: print (f"Trimming to {target} problems")
-    consistent_problems = consistent_problems[:target]
+    if len(consistent_problems) > target:
+        print(f"  Trimming {len(consistent_problems)} → {target} problems")
+        consistent_problems = consistent_problems[:target]
+        consistent_infos = consistent_infos[:target]
+        consistent_trajectories_flat = consistent_trajectories_flat[:target]
 
-    return consistent_problems, last_problems, last_info, last_trajectories
+    return consistent_problems, consistent_infos, consistent_trajectories_flat, last_problems, last_info, last_trajectories
 
 # =====================================================================
 # Main Training Loop
@@ -486,16 +541,18 @@ def train(args, experiment_id, experiment_folder_path: Path):
     # ---- NeSIG warmup (train teacher before student to improve consistency) ----
     if last_train_it == 0 and args.nesig_warmup_steps > 0:
         print(f"\n{'='*70}")
-        print(f"NESIG WARMUP  ({args.nesig_warmup_steps} steps, dummy difficulty)")
+        print(f"NESIG WARMUP  ({args.nesig_warmup_steps} steps, student-calibrated difficulty)")
         print(f"{'='*70}\n")
 
-        # Use dummy difficulty during warmup — constant reward so NeSIG
-        # learns to generate valid blocksworld problems without student feedback
-        from src.nesig.metrics.difficulty import DummyDifficultyEvaluator
-        problem_generator.difficulty_evaluator = DummyDifficultyEvaluator(constant_difficulty=1.0)
+        # Use student difficulty evaluator during warmup so NeSIG learns to
+        # generate problems calibrated to the student's current capabilities,
+        # but the student does NOT train — only NeSIG updates.
+        problem_generator.difficulty_evaluator = difficulty_evaluator
 
         for warmup_step in range(1, args.nesig_warmup_steps + 1):
             print(f"\033[1m\033[93m[WARMUP] Step {warmup_step}/{args.nesig_warmup_steps}\033[0m")
+
+            # Generate problems
             with torch.no_grad():
                 problems, problem_info_list, trajectories, _, _ = \
                     nesig_trainer._generate_problems_and_trajectories(
@@ -503,9 +560,33 @@ def train(args, experiment_id, experiment_folder_path: Path):
                         args.max_init_actions_train,
                         args.max_goal_actions_train,
                     )
+
             consistent = sum(1 for p in problem_info_list if p['consistency'])
             print(f"  Consistent: {consistent}/{len(problem_info_list)}")
 
+            # Inject difficulty rewards using student (no student update)
+            last_batch_consistent = [
+                p for p, info in zip(problems, problem_info_list)
+                if info['consistency']
+            ]
+            if last_batch_consistent:
+                with torch.no_grad():
+                    _, warmup_difficulty_rewards = \
+                        difficulty_evaluator.get_difficulty(last_batch_consistent)
+
+                consistent_indices = [
+                    i for i, info in enumerate(problem_info_list) if info['consistency']
+                ]
+                for traj_i, diff_reward in zip(consistent_indices, warmup_difficulty_rewards):
+                    if trajectories[traj_i]:
+                        trajectories[traj_i][-1]['difficulty_reward'] = diff_reward
+
+                mean_diff = sum(warmup_difficulty_rewards) / len(warmup_difficulty_rewards)
+                num_solved = sum(1 for d in warmup_difficulty_rewards if d > 0)
+                print(f"  Difficulty: mean={mean_diff:.3f}  "
+                    f"solved={num_solved}/{len(warmup_difficulty_rewards)}")
+
+            # Update NeSIG only — student does NOT train
             with torch.no_grad():
                 init_trajectories, goal_trajectories = nesig_trainer._process_trajectories(
                     trajectories, problem_info_list,
@@ -515,9 +596,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
             nesig_trainer._perform_train_step(init_policy, init_trajectories)
             nesig_trainer._perform_train_step(goal_policy, goal_trajectories)
 
-        # Restore student difficulty evaluator after warmup
-        problem_generator.difficulty_evaluator = difficulty_evaluator
-        print(f"\n  Warmup complete. Switching to student difficulty evaluator.\n")
+        print(f"\n  Warmup complete. Starting co-training.\n")
 
     # ---- Replay buffer ----
     replay_buffer = ReplayBuffer(max_size=args.replay_buffer_size)
@@ -542,9 +621,18 @@ def train(args, experiment_id, experiment_folder_path: Path):
     else:
         print(f"\nUsing existing test problems from {test_problems_dir}")
 
-    # If not generating, use however many problems are in the folder
+    # If not generating, use the first num_problems of the folder
     available = len(list(test_problems_dir.glob('*.pddl')))
-    num_test = args.num_problems_test if args.generate_test_problems else available
+    if args.generate_test_problems:
+        num_test = args.num_problems_test
+    else:
+        num_test = min(args.num_problems_test, available)
+        if available > args.num_problems_test:
+            print(f"  Note: {available} problems available, loading {num_test} "
+                  f"(capped by --num-problems-test)")
+        elif available < args.num_problems_test:
+            print(f"  Warning: only {available} problems available, "
+                  f"requested {args.num_problems_test}")
     print(f"  Loading {num_test} test problems")
 
     test_problems = load_problems_from_dir(
@@ -577,8 +665,8 @@ def train(args, experiment_id, experiment_folder_path: Path):
         if current_step % args.problem_generation_period == 1 or not cached_consistent_problems:
             print(f"\033[1m\033[93m[1] TEACHER GENERATES PROBLEMS\033[0m")
             print(f"  Generating {args.num_problems_train} consistent problems...")
-            cached_consistent_problems, cached_last_problems, \
-            cached_last_problem_info, cached_nesig_trajectories = \
+            cached_consistent_problems, cached_consistent_infos, cached_consistent_trajectories, \
+            cached_last_problems, cached_last_problem_info, cached_nesig_trajectories = \
                 accumulate_consistent_problems(
                     nesig_trainer=nesig_trainer,
                     target=args.num_problems_train,
@@ -590,7 +678,10 @@ def train(args, experiment_id, experiment_folder_path: Path):
             print(f"\033[1m\033[93m[1] REUSING CACHED PROBLEMS (next generation at step "
                   f"{current_step + (args.problem_generation_period - current_step % args.problem_generation_period)})\033[0m")
 
+        # Assign from cache
         consistent_problems = cached_consistent_problems
+        consistent_infos = cached_consistent_infos
+        consistent_trajectories = cached_consistent_trajectories
         last_problems = cached_last_problems
         last_problem_info = cached_last_problem_info
         nesig_trajectories = cached_nesig_trajectories
@@ -602,7 +693,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
         # Save consistent problems to disk for student
         step_problem_dir = Path(args.data_dir) / f'step_{current_step}'
         step_problem_dir.mkdir(parents=True, exist_ok=True)
-        for i, (p, _) in enumerate(consistent_problems):
+        for i, p in enumerate(consistent_problems):
             with open(step_problem_dir / f'problem_{i}.pddl', 'w') as f:
                 f.write(p.dump_to_pddl(f'problem_{i}'))
 
@@ -634,21 +725,22 @@ def train(args, experiment_id, experiment_folder_path: Path):
         #    (using the NOW-UPDATED student)
         # ------------------------------------------------------------------
         print(f"\033[1m\033[93m[4] DIFFICULTY REWARD INJECTION\033[0m")
-        last_batch_consistent_problems = [
-            p for p, info in zip(last_problems, last_problem_info)
-            if info['consistency']
-        ]
 
         with torch.no_grad():
             _, new_difficulty_rewards = \
-                difficulty_evaluator.get_difficulty(last_batch_consistent_problems)
+                difficulty_evaluator.get_difficulty(consistent_problems)
 
-        consistent_indices = [
-            i for i, info in enumerate(last_problem_info) if info['consistency']
-        ]
-        for traj_i, diff_reward in zip(consistent_indices, new_difficulty_rewards):
-            if nesig_trajectories[traj_i]:
-                nesig_trajectories[traj_i][-1]['difficulty_reward'] = diff_reward
+        # Inject into accumulated consistent trajectories
+        for traj, diff_reward in zip(consistent_trajectories, new_difficulty_rewards):
+            if traj:
+                traj[-1]['difficulty_reward'] = diff_reward
+
+        num_solved = sum(1 for d in new_difficulty_rewards if d > 0)
+        mean_diff = sum(new_difficulty_rewards) / len(new_difficulty_rewards) if new_difficulty_rewards else 0
+        print(f"  [NESIG-STUDENT METRICS]")
+        print(f"    Consistency rate    : {len(consistent_problems)}/{args.num_problems_train}")
+        print(f"    Student solved      : {num_solved}/{len(new_difficulty_rewards)}")
+        print(f"    Mean difficulty     : {mean_diff:.3f}")
 
         # ------------------------------------------------------------------
         # 5. Teacher PPO update (every teacher_update_period steps)
@@ -657,7 +749,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
             print(f"\033[1m\033[93m[5] TEACHER PPO UPDATE\033[0m")
             with torch.no_grad():
                 init_trajectories, goal_trajectories = nesig_trainer._process_trajectories(
-                    nesig_trajectories, last_problem_info,  # ← was problem_info_list
+                    consistent_trajectories, consistent_infos,
                     train_init_policy=True,
                     train_goal_policy=True,
                 )
