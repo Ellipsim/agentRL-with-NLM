@@ -486,7 +486,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
     last_train_it = read_last_train_it(experiment_info_path)
     print(f"Previous progress: last_train_it={last_train_it}")
 
-    if args.train_mode == 'supersede' or last_train_it == 0:
+    if args.train_mode == 'supersede':
         for folder in (LOGS_FOLDER_NAME, CKPTS_FOLDER_NAME, TEST_FOLDER_NAME):
             remove_if_exists(experiment_folder_path / folder)
         p = experiment_folder_path / REPLAY_BUFFER_FILENAME
@@ -539,6 +539,18 @@ def train(args, experiment_id, experiment_folder_path: Path):
         nesig_args, experiment_folder_path / 'nesig',
         problem_generator, init_policy, goal_policy, device=device,
     )
+
+    # ---- Load NeSIG checkpoints on resume ----
+    if args.train_mode == 'resume' and last_train_it > 0:
+        nesig_ckpt_dir = experiment_folder_path / 'nesig' / 'checkpoints'
+        init_ckpt = nesig_ckpt_dir / 'init_last.ckpt'
+        goal_ckpt = nesig_ckpt_dir / 'goal_last.ckpt'
+        if init_ckpt.exists() and goal_ckpt.exists():
+            print(f"  Loading NeSIG checkpoints from {nesig_ckpt_dir}")
+            init_policy.load_state_dict(torch.load(str(init_ckpt), map_location=device)['state_dict'])
+            goal_policy.load_state_dict(torch.load(str(goal_ckpt), map_location=device)['state_dict'])
+        else:
+            print(f"  Warning: NeSIG checkpoints not found, starting from scratch")
 
     # ---- NeSIG warmup ----
     if last_train_it == 0 and args.nesig_warmup_steps > 0:
@@ -809,6 +821,13 @@ def train(args, experiment_id, experiment_folder_path: Path):
         print(f"\033[1m\033[90mCHECKPOINTING\033[0m")
         replay_buffer.save(experiment_folder_path)
         save_experiment_info(experiment_info_path, args, experiment_id, current_step)
+
+        # Save NeSIG policy checkpoints
+        nesig_ckpt_dir = experiment_folder_path / 'nesig' / 'checkpoints'
+        nesig_ckpt_dir.mkdir(parents=True, exist_ok=True)
+        for name, policy_obj in [('init', init_policy), ('goal', goal_policy)]:
+            state_dict = {k: v.cpu().clone() for k, v in policy_obj.state_dict().items()}
+            torch.save({'state_dict': state_dict}, str(nesig_ckpt_dir / f'{name}_last.ckpt'))
 
         current_step += 1
 
