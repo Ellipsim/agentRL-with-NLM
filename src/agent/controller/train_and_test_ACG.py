@@ -594,6 +594,9 @@ def train(args, parser, experiment_id, experiment_folder_path: Path):
             replay_buffer=replay_buffer,
             replay_extra=args.replay_extra,
         )
+        print(f"  Problems: {args.num_problems_train} curriculum + "
+              f"{len(train_problems) - args.num_problems_train} replay = "
+              f"{len(train_problems)} total")
 
         # Register buffer
         replay_buffer.register_dir(str(level_train_dir))
@@ -636,6 +639,9 @@ def train(args, parser, experiment_id, experiment_folder_path: Path):
                     replay_buffer=replay_buffer,
                     replay_extra=args.replay_extra, 
                 )
+                print(f"  Problems: {args.num_problems_train} curriculum + "
+                      f"{len(train_problems) - args.num_problems_train} replay = "
+                      f"{len(train_problems)} total")
 
                 current_step, _, target_reached = trainer.train_acl_level(
                     problems=train_problems,

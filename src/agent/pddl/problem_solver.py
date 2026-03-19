@@ -40,7 +40,7 @@ class ProblemSolver:
 
     def __init__(self, parser: Parser, policy: GenerativePolicy,
                  reward_goal_reached: float = 1.0,
-                 reward_step: float = -0.01):
+                 reward_step: float = -1):
         """
         Parameters
         ----------
@@ -157,7 +157,7 @@ class ProblemSolver:
     # ------------------------------------------------------------------
 
     def _calculate_trajectory_rewards(self, trajectory: List[Dict], goal_reached: bool, 
-                                      num_steps: int) -> List[Dict]:
+                                      num_steps: int, max_actions: int) -> List[Dict]:
         """
         Calculate and assign rewards to trajectory samples.
         
@@ -178,11 +178,15 @@ class ProblemSolver:
         trajectory : List[Dict]
             Trajectory with 'reward' field populated for each sample
         """
+        # Normalize step penalty by max_actions so scale is consistent across problem sizes
+        normalized_step_reward = self.reward_step / max_actions
+
+
         for i, sample in enumerate(trajectory):
             is_last_step = (i == len(trajectory) - 1)
             
             # Base reward: penalty for each step
-            reward = self.reward_step
+            reward = normalized_step_reward
             
             # Goal bonus: only at last step if goal reached
             if is_last_step and goal_reached:
@@ -306,7 +310,8 @@ class ProblemSolver:
             trajectories[i] = self._calculate_trajectory_rewards(
                 trajectories[i],
                 goal_reached,
-                num_steps
+                num_steps,
+                max_actions=list_max_actions[i]
             )
 
             problem_info_list.append(problem_info)
