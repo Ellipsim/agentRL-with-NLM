@@ -139,7 +139,6 @@ def parse_arguments():
     # ---- Student ----
     parser.add_argument('--reward-goal-reached', type=float, default=1.0)
     parser.add_argument('--reward-step', type=float, default=-0.05)
-    parser.add_argument('--reward-efficiency', type=float, default=0.0)
     parser.add_argument('--max-actions-train', type=int, default=None,
                         help="Action budget for student during training "
                              "(defaults to max-actions-test if not set)")
@@ -177,7 +176,9 @@ def parse_arguments():
                         help="Max NeSIG generation batches per step before giving up")
 
     # ---- Experience replay ----
-    parser.add_argument('--replay-prob', type=float, default=0.2)
+    parser.add_argument('--replay-extra', type=int, default=0,
+                    help="Number of extra problems to add from replay buffer "
+                         "on top of the NeSIG generated ones. Set 0 to disable.")
     parser.add_argument('--replay-buffer-size', type=int, default=3000)
 
     # ---- Logging ----
@@ -344,8 +345,7 @@ def build_student(args, domain_parser, last_train_it, experiment_folder_path, de
     student_solver = ProblemSolver(
         domain_parser, student_policy,
         reward_goal_reached=args.reward_goal_reached,
-        reward_step=args.reward_step,
-        reward_efficiency=args.reward_efficiency,
+        reward_step=args.reward_step
     )
 
     return student_policy, student_solver
@@ -540,21 +540,15 @@ def train(args, experiment_id, experiment_folder_path: Path):
         problem_generator, init_policy, goal_policy, device=device,
     )
 
-    # ---- NeSIG warmup (train teacher before student to improve consistency) ----
+    # ---- NeSIG warmup ----
     if last_train_it == 0 and args.nesig_warmup_steps > 0:
         print(f"\n{'='*70}")
         print(f"NESIG WARMUP  ({args.nesig_warmup_steps} steps, student-calibrated difficulty)")
         print(f"{'='*70}\n")
 
-        # Use student difficulty evaluator during warmup so NeSIG learns to
-        # generate problems calibrated to the student's current capabilities,
-        # but the student does NOT train — only NeSIG updates.
-        problem_generator.difficulty_evaluator = difficulty_evaluator
-
         for warmup_step in range(1, args.nesig_warmup_steps + 1):
             print(f"\033[1m\033[93m[WARMUP] Step {warmup_step}/{args.nesig_warmup_steps}\033[0m")
 
-            # Generate problems
             with torch.no_grad():
                 problems, problem_info_list, trajectories, _, _ = \
                     nesig_trainer._generate_problems_and_trajectories(
@@ -566,16 +560,34 @@ def train(args, experiment_id, experiment_folder_path: Path):
             consistent = sum(1 for p in problem_info_list if p['consistency'])
             print(f"  Consistent: {consistent}/{len(problem_info_list)}")
 
-            # Inject difficulty rewards using student (no student update)
-            last_batch_consistent = [
-                p for p, info in zip(problems, problem_info_list)
-                if info['consistency']
-            ]
-            if last_batch_consistent:
-                with torch.no_grad():
-                    _, warmup_difficulty_rewards = \
-                        difficulty_evaluator.get_difficulty(last_batch_consistent)
+            # Save consistent problems to temp dir for student to load
+            if consistent > 0:
+                import tempfile
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    consistent_nesig_problems = [
+                        p for p, info in zip(problems, problem_info_list)
+                        if info['consistency']
+                    ]
+                    for i, p in enumerate(consistent_nesig_problems):
+                        with open(Path(tmp_dir) / f'problem_{i}.pddl', 'w') as f:
+                            f.write(p.dump_to_pddl(f'problem_{i}'))
 
+                    warmup_student_problems = load_problems_from_dir(
+                        tmp_dir, args.domain_path,
+                        len(consistent_nesig_problems),
+                        max_actions=args.max_actions_train,
+                    )
+
+                # Student solves warmup problems — no PPO update
+                with torch.no_grad():
+                    _, warmup_problem_info, _, _ = \
+                        student_trainer._solve_and_collect_trajectories(
+                            warmup_student_problems, args.max_actions_train
+                        )
+
+                warmup_difficulty_rewards = difficulty_evaluator.get_difficulty(warmup_problem_info)
+
+                # Inject into NeSIG trajectories
                 consistent_indices = [
                     i for i, info in enumerate(problem_info_list) if info['consistency']
                 ]
@@ -586,7 +598,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
                 mean_diff = sum(warmup_difficulty_rewards) / len(warmup_difficulty_rewards)
                 num_solved = sum(1 for d in warmup_difficulty_rewards if d > 0)
                 print(f"  Difficulty: mean={mean_diff:.3f}  "
-                    f"solved={num_solved}/{len(warmup_difficulty_rewards)}")
+                      f"solved={num_solved}/{len(warmup_difficulty_rewards)}")
 
             # Update NeSIG only — student does NOT train
             with torch.no_grad():
@@ -698,22 +710,20 @@ def train(args, experiment_id, experiment_folder_path: Path):
         print(f"\033[1m\033[93m[2] STUDENT LOADS PROBLEMS\033[0m")
 
         # TODO: Check side-effects
-        # student_problems may not correspond 1-to-1 with consistent_problems because of the replay buffer,
-        # so we load the separtely to obtain the trayectories of both later
+        # NeSIG problems without replay — for clean difficulty signal
         nesig_only_problems = load_problems_from_dir(
             str(step_problem_dir), args.domain_path,
             len(consistent_problems),
             max_actions=args.max_actions_train,
-            replay_buffer=None,   # ← no replay
-            replay_prob=0.0,
         )
 
+        # Student problems with extra replay problems added on top
         student_problems = load_problems_from_dir(
             str(step_problem_dir), args.domain_path,
             len(consistent_problems),
             max_actions=args.max_actions_train,
             replay_buffer=replay_buffer,
-            replay_prob=args.replay_prob,
+            replay_extra=args.replay_extra,
         )
 
         # ------------------------------------------------------------------

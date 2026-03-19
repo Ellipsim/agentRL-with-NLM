@@ -40,8 +40,7 @@ class ProblemSolver:
 
     def __init__(self, parser: Parser, policy: GenerativePolicy,
                  reward_goal_reached: float = 1.0,
-                 reward_step: float = -0.01,
-                 reward_efficiency: float = 0.5):
+                 reward_step: float = -0.01):
         """
         Parameters
         ----------
@@ -59,7 +58,6 @@ class ProblemSolver:
         # Reward configuration
         self.reward_goal_reached = reward_goal_reached
         self.reward_step = reward_step
-        self.reward_efficiency = reward_efficiency
 
     # ------------------------------------------------------------------
     # Core solve loop
@@ -189,10 +187,6 @@ class ProblemSolver:
             # Goal bonus: only at last step if goal reached
             if is_last_step and goal_reached:
                 reward += self.reward_goal_reached
-                
-                # Efficiency bonus: reward shorter plans
-                efficiency_bonus = self.reward_efficiency / (1.0 + 0.1 * num_steps)
-                reward += efficiency_bonus
             
             sample['reward'] = reward
         

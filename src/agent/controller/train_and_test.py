@@ -191,10 +191,6 @@ def parse_arguments():
         '--reward-step', type=float, default=-0.01,
         help="Penalty for each step"
     )
-    parser.add_argument(
-        '--reward-efficiency', type=float, default=0.5,
-        help="Weight for efficiency bonus"
-    )
 
     # ---- NLM Model Specific Arguments ----
     # Register all NLM-specific arguments (breadth, depth, hidden-features, etc.)
@@ -427,8 +423,7 @@ def train(args, parser, experiment_id, experiment_folder_path):
         parser,
         policy,
         reward_goal_reached=args.reward_goal_reached,
-        reward_step=args.reward_step,
-        reward_efficiency=args.reward_efficiency
+        reward_step=args.reward_step
     )
     
     # Create trainer
@@ -528,8 +523,7 @@ def test(args, parser, experiment_id, experiment_folder_path):
         parser,
         policy,
         reward_goal_reached=args.reward_goal_reached,
-        reward_step=args.reward_step,
-        reward_efficiency=args.reward_efficiency
+        reward_step=args.reward_step
     )
     
     # Create trainer

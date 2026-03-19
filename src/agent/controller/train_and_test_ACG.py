@@ -146,9 +146,9 @@ def parse_arguments():
                         help="Action budget per test problem")
 
     # ---- Experience replay ----
-    parser.add_argument('--replay-prob', type=float, default=0.2,
-                        help="Probability of replacing a curriculum slot with a replayed "
-                             "problem. Set 0.0 to disable.")
+    parser.add_argument('--replay-extra', type=int, default=0,
+                        help="Number of extra problems to add from replay buffer "
+                            "on top of the generated ones. Set 0 to disable.")
     parser.add_argument('--replay-buffer-size', type=int, default=3000,
                         help="Max problem paths kept in the replay buffer (FIFO eviction).")
 
@@ -176,7 +176,6 @@ def parse_arguments():
     # ---- Rewards ----
     parser.add_argument('--reward-goal-reached', type=float, default=1.0)
     parser.add_argument('--reward-step', type=float, default=-0.01)
-    parser.add_argument('--reward-efficiency', type=float, default=0.5)
 
     # ---- NLM model args ----
     NLMWrapperActor.add_model_specific_args(parser)
@@ -214,8 +213,6 @@ def validate_args(args):
         raise ValueError("--disc-factor must be in [0, 1]")
     if not 0.0 <= args.gae_factor <= 1.0:
         raise ValueError("--gae-factor must be in [0, 1]")
-    if not 0.0 <= args.replay_prob <= 1.0:
-        raise ValueError("--replay-prob must be in [0, 1]")
     if args.replay_buffer_size < 1:
         raise ValueError("--replay-buffer-size must be > 0")
     if args.train_mode == "skip" and args.test_mode == "skip":
@@ -326,7 +323,7 @@ def load_problems_from_dir(
     num_problems,
     max_actions=None,
     replay_buffer: Optional[ReplayBuffer] = None,
-    replay_prob: float = 0.0,
+    replay_extra: int = 0,
 ) -> List[PDDLProblem]:
     import random
     problem_dir = Path(problem_dir)
@@ -334,19 +331,19 @@ def load_problems_from_dir(
     if not problem_files:
         raise FileNotFoundError(f"No .pddl files in {problem_dir}")
 
-    problems = []
-    for i in range(num_problems):
-        use_replay = (
-            replay_buffer is not None
-            and len(replay_buffer) > 0
-            and random.random() < replay_prob
-        )
-        path = replay_buffer.sample() if use_replay else str(problem_files[i % len(problem_files)])
+    if num_problems > len(problem_files):
+        print(f"  Warning: requested {num_problems} problems but only "
+              f"{len(problem_files)} available in {problem_dir}. "
+              f"Problems will be cycled.")
 
+    problems = []
+
+    # Load curriculum problems
+    for i in range(num_problems):
+        path = str(problem_files[i % len(problem_files)])
         fresh_parser = Parser()
         fresh_parser.parse_domain(str(domain_path))
         problem = PDDLProblem.load_from_pddl(fresh_parser, path)
-
         if problem is not None:
             if max_actions is not None:
                 problem.max_actions = (
@@ -356,7 +353,23 @@ def load_problems_from_dir(
                 )
             problems.append(problem)
 
-    # Register AFTER sampling so current level never appears in replay slots
+    # Add extra problems from replay buffer on top
+    if replay_extra > 0 and replay_buffer is not None and len(replay_buffer) > 0:
+        for _ in range(replay_extra):
+            path = replay_buffer.sample()
+            fresh_parser = Parser()
+            fresh_parser.parse_domain(str(domain_path))
+            problem = PDDLProblem.load_from_pddl(fresh_parser, path)
+            if problem is not None:
+                if max_actions is not None:
+                    problem.max_actions = (
+                        max_actions[0]
+                        if isinstance(max_actions, tuple)
+                        else max_actions
+                    )
+                problems.append(problem)
+
+    # Register AFTER loading so current dir doesn't appear in replay slots yet
     if replay_buffer is not None:
         replay_buffer.register_dir(str(problem_dir))
 
@@ -536,8 +549,7 @@ def train(args, parser, experiment_id, experiment_folder_path: Path):
     problem_solver = ProblemSolver(
         parser, policy,
         reward_goal_reached=args.reward_goal_reached,
-        reward_step=args.reward_step,
-        reward_efficiency=args.reward_efficiency,
+        reward_step=args.reward_step
     )
     trainer = PolicyTrainer(args, experiment_folder_path, problem_solver, policy, device)
 
@@ -547,7 +559,7 @@ def train(args, parser, experiment_id, experiment_folder_path: Path):
     print(f"\n{'='*70}")
     print(f"TRAINING  (ACL + curriculum + replay)")
     print(f"Steps : {last_train_it + 1} -> {args.steps}")
-    print(f"Replay: prob={args.replay_prob}  buffer={args.replay_buffer_size}")
+    print(f"Replay: problems_replayed_per_batch={args.replay_extra}  buffer={args.replay_buffer_size}")
     print(f"Test  : every {args.test_period} steps  ({num_test} problems)")
     print(f"{'='*70}\n")
 
@@ -580,7 +592,7 @@ def train(args, parser, experiment_id, experiment_folder_path: Path):
             args.num_problems_train,
             max_actions=args.max_actions_train,
             replay_buffer=replay_buffer,
-            replay_prob=args.replay_prob,
+            replay_extra=args.replay_extra,
         )
 
         # Register buffer
@@ -622,7 +634,7 @@ def train(args, parser, experiment_id, experiment_folder_path: Path):
                     args.num_problems_train,
                     max_actions=args.max_actions_train,
                     replay_buffer=replay_buffer,
-                    replay_prob=args.replay_prob, 
+                    replay_extra=args.replay_extra, 
                 )
 
                 current_step, _, target_reached = trainer.train_acl_level(
@@ -691,8 +703,7 @@ def run_final_test(args, parser, experiment_id, experiment_folder_path: Path):
         parser, 
         policy,
         reward_goal_reached=args.reward_goal_reached,
-        reward_step=args.reward_step,
-        reward_efficiency=args.reward_efficiency,
+        reward_step=args.reward_step
     )
     trainer = PolicyTrainer(args, experiment_folder_path, problem_solver, policy, device)
 
