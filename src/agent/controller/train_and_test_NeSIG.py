@@ -129,7 +129,7 @@ def parse_arguments():
                             help="PPO epochs for teacher update")
     parser.add_argument('--nesig-lr', type=float, default=1e-3,
                             help="Learning rate for teacher")
-    parser.add_argument('--diversity-threshold', type=float, default=0.75)
+    parser.add_argument('--diversity-threshold', type=float, default=0.25)
     parser.add_argument('--perc-problems-diversity', type=float, default=1.0)
     parser.add_argument('--r-eventual-consistency', type=float, default=-1.0)
     parser.add_argument('--consistency-evaluator', choices=('dummy', 'domain'), default='domain')
@@ -138,7 +138,7 @@ def parse_arguments():
     
     # ---- Student ----
     parser.add_argument('--reward-goal-reached', type=float, default=1.0)
-    parser.add_argument('--reward-step', type=float, default=-0.05)
+    parser.add_argument('--reward-step', type=float, default=-1)
     parser.add_argument('--max-actions-train', type=int, default=None,
                         help="Action budget for student during training "
                              "(defaults to max-actions-test if not set)")
@@ -160,7 +160,7 @@ def parse_arguments():
                          "Defaults to --teacher-update-period if not set.")
 
     
-    parser.add_argument('--batch-size', type=int, default=32)
+    parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--grad-clip', type=float, default=0.5)
     parser.add_argument('--disc-factor', type=float, default=0.99)
     parser.add_argument('--gae-factor', type=float, default=0.95)
@@ -260,8 +260,8 @@ def build_nesig_components(args, device):
         critic_loss_weight=args.critic_loss_weight,
         grad_clip=args.grad_clip,
         batch_size=args.batch_size,
-        disc_factor=args.disc_factor,
-        gae_factor=args.gae_factor,
+        disc_factor=1.0,
+        gae_factor=1.0,
         weight_decay=0.0,
         init_policy='PPO',
         goal_policy='PPO',
@@ -476,6 +476,29 @@ def accumulate_consistent_problems(
     return consistent_problems, consistent_infos, consistent_trajectories
 
 # =====================================================================
+# Checkpoint helper
+# =====================================================================
+
+def save_policy_checkpoint(policy_obj, ckpt_path: Path) -> None:
+    """Save policy checkpoint safely, removing problematic sharded tensor hooks."""
+    hooks_to_restore = []
+    for module in policy_obj.modules():
+        bad_hooks = [h for h in module._state_dict_hooks.values()
+                     if 'sharded_tensor' in getattr(h, '__module__', '')]
+        for hook in bad_hooks:
+            handle = next(k for k, v in module._state_dict_hooks.items() if v is hook)
+            hooks_to_restore.append((module, handle, hook))
+            del module._state_dict_hooks[handle]
+
+    try:
+        state_dict = {k: v.cpu().clone() for k, v in policy_obj.state_dict().items()}
+        ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({'state_dict': state_dict}, str(ckpt_path))
+    finally:
+        for module, handle, hook in hooks_to_restore:
+            module._state_dict_hooks[handle] = hook
+
+# =====================================================================
 # Main Training Loop
 # =====================================================================
 
@@ -607,11 +630,6 @@ def train(args, experiment_id, experiment_folder_path: Path):
                     if trajectories[traj_i]:
                         trajectories[traj_i][-1]['difficulty_reward'] = diff_reward
 
-                mean_diff = sum(warmup_difficulty_rewards) / len(warmup_difficulty_rewards)
-                num_solved = sum(1 for d in warmup_difficulty_rewards if d > 0)
-                print(f"  Difficulty: mean={mean_diff:.3f}  "
-                      f"solved={num_solved}/{len(warmup_difficulty_rewards)}")
-
             # Update NeSIG only — student does NOT train
             with torch.no_grad():
                 init_trajectories, goal_trajectories = nesig_trainer._process_trajectories(
@@ -685,7 +703,12 @@ def train(args, experiment_id, experiment_folder_path: Path):
         # ------------------------------------------------------------------
         # 1. Teacher generates problems (every problem_generation_period steps)
         # ------------------------------------------------------------------
-        if current_step % args.problem_generation_period == 1 or not consistent_problems:
+        should_generate = (
+            not consistent_problems or
+            current_step % args.problem_generation_period == 0
+        )
+
+        if should_generate:
             print(f"\033[1m\033[93m[1] TEACHER GENERATES PROBLEMS\033[0m")
             print(f"  Generating {args.num_problems_train} consistent problems...")
             consistent_problems, consistent_infos, consistent_trajectories = \
@@ -696,16 +719,13 @@ def train(args, experiment_id, experiment_folder_path: Path):
                     goal_actions=args.max_goal_actions_train,
                     max_attempts=args.max_generation_attempts,
                 )
-        else:
-            print(f"\033[1m\033[93m[1] REUSING CACHED PROBLEMS (next generation at step "
-                  f"{current_step + (args.problem_generation_period - current_step % args.problem_generation_period)})\033[0m")
 
-        if not consistent_problems:
-            print("  No consistent problems generated after max attempts, skipping step.")
-            continue
+            if not consistent_problems:
+                print("  No consistent problems generated after max attempts, skipping step.")
+                current_step += 1
+                continue
 
-        # Save consistent problems to disk for student
-        if current_step % args.problem_generation_period == 1 or not consistent_problems:
+            # Save to disk only when newly generated
             step_problem_dir = Path(args.data_dir) / f'step_{current_step}'
             step_problem_dir.mkdir(parents=True, exist_ok=True)
             for i, p in enumerate(consistent_problems):
@@ -713,7 +733,9 @@ def train(args, experiment_id, experiment_folder_path: Path):
                     f.write(p.dump_to_pddl(f'problem_{i}'))
             replay_buffer.register_dir(str(step_problem_dir))
             cached_step_problem_dir = step_problem_dir
-        else: 
+        else:
+            print(f"\033[1m\033[93m[1] REUSING CACHED PROBLEMS (next generation at step "
+                  f"{current_step + (args.problem_generation_period - current_step % args.problem_generation_period)})\033[0m")
             step_problem_dir = cached_step_problem_dir
 
         # ------------------------------------------------------------------
@@ -824,10 +846,8 @@ def train(args, experiment_id, experiment_folder_path: Path):
 
         # Save NeSIG policy checkpoints
         nesig_ckpt_dir = experiment_folder_path / 'nesig' / 'checkpoints'
-        nesig_ckpt_dir.mkdir(parents=True, exist_ok=True)
         for name, policy_obj in [('init', init_policy), ('goal', goal_policy)]:
-            state_dict = {k: v.cpu().clone() for k, v in policy_obj.state_dict().items()}
-            torch.save({'state_dict': state_dict}, str(nesig_ckpt_dir / f'{name}_last.ckpt'))
+            save_policy_checkpoint(policy_obj, nesig_ckpt_dir / f'{name}_last.ckpt')
 
         current_step += 1
 

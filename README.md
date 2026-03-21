@@ -104,7 +104,7 @@ python -m src.agent.controller.train_and_test_ACG \
     --device gpu \
     --seed 1 \
     --steps 200 \
-    --num-problems-train 20 \
+    --num-problems-train 30 \
     --num-problems-test 100 \
     --test-period 20 \
     --check-advance-period 5 \
@@ -116,7 +116,7 @@ python -m src.agent.controller.train_and_test_ACG \
     --blocks-increment 1 \
     --log-period 1 \
     --batch-size 32 \
-    --replay-prob 0.3 \
+    --replay-extra 5 \
     --replay-buffer-size 500 \
     --train-mode supersede \
     --test-mode supersede
@@ -188,23 +188,25 @@ Lore Ipsum
 ### Usage
 
 ```bash
-python -m src.agent.controller.train_and_test_NeSIG     
-    --domain-path data/domains/blocksworld.pddl     
-    --device gpu     
-    --seed 1     
-    --steps 100     
-    --num-problems-train 30    
-    --test-period 20 
-    --max-init-actions-train 30 
-    --max-goal-actions-train 30 
-    --teacher-update-period 5 
-    --nesig-warmup-steps 30    
-    --log-period 1     
-    --batch-size 32     
-    --replay-prob 0.4 
-    --solve-lr 1e-2  
-    --train-mode supersede     
-    --test-mode supersede
+python -m src.agent.controller.train_and_test_NeSIG \
+    --domain-path data/domains/blocksworld.pddl \
+    --device gpu \
+    --seed 1 \
+    --steps 200 \
+    --num-problems-train 25 \
+    --num-problems-test 300 \
+    --test-period 20 \
+    --teacher-update-period 1 \
+    --max-init-actions-train 10 \
+    --max-goal-actions-train 20 \
+    --max-actions-test 116 \
+    --nesig-warmup-steps 30 \
+    --solve-PPO-epochs 3 \
+    --train-mode supersede \
+    --test-mode supersede \
+    --nesig-ppo-epochs 5 \
+    --nesig-lr 1e-2 \
+    --diversity-threshold 0.25
 ```
 
 ---

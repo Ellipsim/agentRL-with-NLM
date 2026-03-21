@@ -125,7 +125,7 @@ def parse_arguments():
                         help="Problems per training iteration")
     parser.add_argument('--max-actions-train', type=parse_max_actions, default=None,
                         help="Action budget per training problem")
-    parser.add_argument('--batch-size', type=int, default=32)
+    parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--min-samples-train', type=int, default=10,
                         help="Min trajectory samples needed before a PPO update")
     parser.add_argument('--grad-clip', type=float, default=0.5,
@@ -175,7 +175,7 @@ def parse_arguments():
 
     # ---- Rewards ----
     parser.add_argument('--reward-goal-reached', type=float, default=1.0)
-    parser.add_argument('--reward-step', type=float, default=-0.01)
+    parser.add_argument('--reward-step', type=float, default=-1)
 
     # ---- NLM model args ----
     NLMWrapperActor.add_model_specific_args(parser)

@@ -293,13 +293,13 @@ class PolicyTrainer:
             samples.extend(trajectory)
 
         # Normalize advantages across the entire batch
-        if len(samples) > 1:
-            advantages = [s['advantage'] for s in samples]
-            mean_adv = sum(advantages) / len(advantages)
-            std_adv = (sum((a - mean_adv) ** 2 for a in advantages) / len(advantages)) ** 0.5
-            std_adv = max(std_adv, 0.1)
-            for s in samples:
-                s['advantage'] = (s['advantage'] - mean_adv) / std_adv
+        # if len(samples) > 1:
+        #     advantages = [s['advantage'] for s in samples]
+        #     mean_adv = sum(advantages) / len(advantages)
+        #     std_adv = (sum((a - mean_adv) ** 2 for a in advantages) / len(advantages)) ** 0.5
+        #     std_adv = max(std_adv, 0.1)
+        #     for s in samples:
+        #         s['advantage'] = (s['advantage'] - mean_adv) / std_adv
 
         return samples
 
@@ -319,6 +319,31 @@ class PolicyTrainer:
             return
 
         print(f"    Performing PPO update with {len(samples)} samples")
+
+        # ---- Log advantage std BEFORE normalization ----
+        raw_advantages = [s['advantage'] for s in samples]
+        mean_adv = sum(raw_advantages) / len(raw_advantages)
+        std_adv_raw = (sum((a - mean_adv) ** 2 for a in raw_advantages) / len(raw_advantages)) ** 0.5
+
+        # ---- Log value prediction error BEFORE update ----
+        value_errors = [
+            (s['return'] - s['state_value']) ** 2
+            for s in samples if 'state_value' in s
+        ]
+        mean_value_loss = sum(value_errors) / len(value_errors) if value_errors else 0.0
+
+        # Log to TensorBoard
+        if hasattr(self, 'writers') and 'train' in self.writers:
+            step = self.policy.curr_logging_it
+            self.writers['train'].add_scalar(
+                'PPO/advantage_std_raw', std_adv_raw, global_step=step
+            )
+            self.writers['train'].add_scalar(
+                'PPO/value_loss_before_update', mean_value_loss, global_step=step
+            )
+
+        print(f"    Advantage std (raw): {std_adv_raw:.4f}")
+        print(f"    Value loss (before update): {mean_value_loss:.4f}")
 
         dataset = SolverDataset(samples)
         dataloader = DataLoader(
