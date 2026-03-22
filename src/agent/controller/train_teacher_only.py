@@ -17,9 +17,9 @@ Usage:
         --num-problems-train 25 \
         --max-init-actions-train 10 \
         --max-goal-actions-train 10 \
-        --nesig-lr 1e-3 \
-        --nesig-ppo-epochs 3 \
-        --difficulty-penalty -1.0 \
+        --nesig-lr 1e-2 \
+        --nesig-ppo-epochs 2 \
+        --r-eventual-consistency -10 \
         --train-mode supersede
 """
 
@@ -113,10 +113,6 @@ def parse_arguments():
     # ---- Difficulty reward ----
     parser.add_argument('--difficulty-penalty', type=float, default=0,
                         help="Reward for NeSIG when student fails the problem")
-    parser.add_argument('--difficulty-target', type=float, default=0.7,
-                        help="Target fraction of action budget student should use")
-    parser.add_argument('--difficulty-sigma', type=float, default=0.2,
-                        help="Width of bell curve around target difficulty")
 
     # ---- Training ----
     parser.add_argument('--steps', type=int, default=200,
@@ -357,9 +353,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
     # ---- Difficulty evaluator ----
     difficulty_evaluator = StudentDifficultyEvaluator(
         max_actions=args.max_actions_train,
-        penalty=args.difficulty_penalty,
-        target_difficulty=args.difficulty_target,
-        sigma=args.difficulty_sigma,
+        penalty=args.difficulty_penalty
     )
 
     # ---- Build trainers ----
@@ -395,7 +389,6 @@ def train(args, experiment_id, experiment_folder_path: Path):
     print(f"Steps              : {last_step + 1} -> {args.steps}")
     print(f"Max init actions   : {args.max_init_actions_train}")
     print(f"Max goal actions   : {args.max_goal_actions_train}")
-    print(f"Difficulty target  : {args.difficulty_target} ± {args.difficulty_sigma}")
     print(f"Difficulty penalty : {args.difficulty_penalty}")
     print(f"{'='*70}\n")
 
@@ -405,55 +398,37 @@ def train(args, experiment_id, experiment_folder_path: Path):
         print(f"\033[1m\033[94mStep {current_step}/{args.steps}\033[0m")
 
         # ------------------------------------------------------------------
-        # 1. NeSIG generates problems
+        # 1. NeSIG generates one batch of problems
         # ------------------------------------------------------------------
         print(f"\033[1m\033[93m[1] TEACHER GENERATES PROBLEMS\033[0m")
-        consistent_problems = []
-        consistent_infos = []
-        consistent_trajectories = []
-        attempts = 0
 
-        while len(consistent_problems) < args.num_problems_train \
-                and attempts < args.max_generation_attempts:
-            with torch.no_grad():
-                problems, problem_info_list, trajectories, _, _ = \
-                    nesig_trainer._generate_problems_and_trajectories(
-                        args.num_problems_train,
-                        args.max_init_actions_train,
-                        args.max_goal_actions_train,
-                    )
+        with torch.no_grad():
+            problems, all_nesig_infos, all_nesig_trajectories, _, _ = \
+                nesig_trainer._generate_problems_and_trajectories(
+                    args.num_problems_train,
+                    args.max_init_actions_train,
+                    args.max_goal_actions_train,
+                )
 
-            new_consistent = [
-                (p, info, traj)
-                for p, info, traj in zip(problems, problem_info_list, trajectories)
-                if info['consistency']
-            ]
-            consistent_problems.extend(p for p, _, _ in new_consistent)
-            consistent_infos.extend(info for _, info, _ in new_consistent)
-            consistent_trajectories.extend(traj for _, _, traj in new_consistent)
-            attempts += 1
+        consistent = [
+            (p, info, traj)
+            for p, info, traj in zip(problems, all_nesig_infos, all_nesig_trajectories)
+            if info['consistency']
+        ]
 
-            if new_consistent:
-                print(f"    attempt {attempts}/{args.max_generation_attempts}: "
-                      f"{len(new_consistent)} consistent, "
-                      f"total={len(consistent_problems)}/{args.num_problems_train}")
-            else:
-                print(f"    attempt {attempts}/{args.max_generation_attempts}: "
-                      f"0 consistent")
+        consistent_problems     = [p    for p, _, _    in consistent]
+        consistent_infos        = [info for _, info, _ in consistent]
+        consistent_trajectories = [traj for _, _, traj in consistent]
 
-        # Trim to target
-        if len(consistent_problems) > args.num_problems_train:
-            consistent_problems = consistent_problems[:args.num_problems_train]
-            consistent_infos = consistent_infos[:args.num_problems_train]
-            consistent_trajectories = consistent_trajectories[:args.num_problems_train]
-
-        consistency_rate = len(consistent_problems) / args.num_problems_train
+        num_consistent = len(consistent_problems)
+        num_total = len(problems)
+        consistency_rate = num_consistent / num_total if num_total > 0 else 0.0
+        print(f"    {num_consistent}/{num_total} consistent ({consistency_rate:.1%})")
 
         if not consistent_problems:
             print("  No consistent problems generated, skipping step.")
             current_step += 1
             continue
-
         # ------------------------------------------------------------------
         # 2. Frozen student attempts problems → difficulty signal
         # ------------------------------------------------------------------
@@ -485,10 +460,8 @@ def train(args, experiment_id, experiment_folder_path: Path):
         # Metrics
         num_solved = sum(1 for info in problem_info if info['goal_reached'])
         fraction_solved = num_solved / len(problem_info) if problem_info else 0.0
-        mean_diff = sum(difficulty_rewards) / len(difficulty_rewards) \
-            if difficulty_rewards else 0.0
-        mean_steps = sum(info['num_steps'] for info in problem_info) / len(problem_info) \
-            if problem_info else 0.0
+        mean_diff = sum(difficulty_rewards) / len(difficulty_rewards) if difficulty_rewards else 0.0
+        mean_steps = sum(info['num_steps'] for info in problem_info) / len(problem_info) if problem_info else 0.0
         mean_budget_used = sum(
             info['num_steps'] / args.max_actions_train
             for info in problem_info
@@ -503,12 +476,19 @@ def train(args, experiment_id, experiment_folder_path: Path):
         print(f"  Mean steps       : {mean_steps:.1f}/{args.max_actions_train}")
 
         # ------------------------------------------------------------------
-        # 3. Teacher PPO update
+        # 3. Teacher PPO update on ALL trajectories
         # ------------------------------------------------------------------
         print(f"\033[1m\033[93m[3] TEACHER PPO UPDATE\033[0m")
+
+        # Inject difficulty into consistent trajectories only
+        for traj, diff_reward in zip(consistent_trajectories, difficulty_rewards):
+            if traj:
+                traj[-1]['difficulty_reward'] = diff_reward
+
+        # Train on ALL trajectories so inconsistent ones receive the consistency penalty
         with torch.no_grad():
             init_trajectories, goal_trajectories = nesig_trainer._process_trajectories(
-                consistent_trajectories, consistent_infos,
+                all_nesig_trajectories, all_nesig_infos,
                 train_init_policy=True,
                 train_goal_policy=True,
             )
