@@ -468,23 +468,23 @@ class PolicyTrainer:
             # Efficiency stats (only for solved)
             successful = [p for p in problem_info_list if p.get('goal_reached', False)]
             if successful:
-                mean_efficiency = sum(p['efficiency'] for p in successful) / len(successful)
+                mean_budget_left = sum(p['budget_left'] for p in successful) / len(successful)
                 mean_steps = sum(p['num_steps'] for p in successful) / len(successful)
             else:
-                mean_efficiency = 0.0
+                mean_budget_left = 0.0
                 mean_steps = 0.0
             
             # Mean steps for all
             mean_steps_all = sum(p['num_steps'] for p in problem_info_list) / num_problems
             
             log_dict['Success rate'] = success_rate
-            log_dict['Mean efficiency'] = mean_efficiency
+            log_dict['Mean budget left'] = mean_budget_left
             log_dict['Mean steps (successful)'] = mean_steps if successful else 0.0
             log_dict['Mean steps (all)'] = mean_steps_all
             log_dict['Num successful'] = success_count
             
             writer.add_scalar('Success rate', success_rate, global_step=x_value)
-            writer.add_scalar('Mean efficiency', mean_efficiency, global_step=x_value)
+            writer.add_scalar('Mean budget left', mean_budget_left, global_step=x_value)
             writer.add_scalar('Mean steps (successful)', mean_steps, global_step=x_value)
             writer.add_scalar('Mean steps (all)', mean_steps_all, global_step=x_value)
 
@@ -562,16 +562,16 @@ class PolicyTrainer:
                 self.args.max_actions_val
             )
 
-            # Validation score = success rate * mean efficiency
+            # Validation score
             # This way a model that solves fewer problems but with better plans
             # can compete with one that solves more but with worse plans
             success_count = sum(1 for p in val_problem_info if p['goal_reached'])
             success_rate = success_count / len(val_problem_info) if val_problem_info else 0.0
             
             successful = [p for p in val_problem_info if p['goal_reached']]
-            mean_efficiency = sum(p['efficiency'] for p in successful) / len(successful) if successful else 0.0
+            mean_budget_left = sum(p['budge_left'] for p in successful) / len(successful) if successful else 0.0
             
-            val_score = success_rate * mean_efficiency
+            val_score = success_rate * mean_budget_left
 
             print(f"  Validation score: {val_score:.3f}")
 
@@ -664,7 +664,7 @@ class PolicyTrainer:
                 test_metrics = self.log_metrics('test', curr_train_it, test_info)
                 print(f"  \033[1m\033[95m[TEST step {curr_train_it}]\033[0m "
                     f"success={test_metrics['Success rate']:.1%}  "
-                    f"efficiency={test_metrics['Mean efficiency']:.3f}  "
+                    f"budget left={test_metrics['Mean budget left']:.3f}  "
                     f"solved={int(test_metrics['Num successful'])}/{len(test_problems)}")
 
             self.policy.curr_logging_it += 1
@@ -827,7 +827,7 @@ class PolicyTrainer:
             metrics['test'] = test_metrics
             print(f"  \033[1m\033[95m[TEST step {current_step}]\033[0m "
                 f"success={test_metrics['Success rate']:.1%}  "
-                f"efficiency={test_metrics['Mean efficiency']:.3f}")
+                f"budget left={test_metrics['Mean budget left']:.3f}")
 
         return metrics
 
@@ -869,13 +869,13 @@ class PolicyTrainer:
 
             successful = [p for p in test_problem_info if p['goal_reached']]
             mean_steps = sum(p['num_steps'] for p in successful) / len(successful) if successful else 0.0
-            mean_efficiency = sum(p['efficiency'] for p in successful) / len(successful) if successful else 0.0
+            mean_budget_left = sum(p['budget_left'] for p in successful) / len(successful) if successful else 0.0
 
             print(f"Test Results:")
             print(f"  Success rate: {success_rate:.1%}")
             print(f"  Successful: {success_count}/{len(test_problem_info)}")
             print(f"  Mean steps: {mean_steps:.1f}")
-            print(f"  Mean efficiency: {mean_efficiency:.3f}")
+            print(f"  Mean budget left: {mean_budget_left:.3f}")
 
             # Save results
             test_results_path = self.test_folder / "results.json"
@@ -884,7 +884,7 @@ class PolicyTrainer:
                 'num_successful': int(success_count),
                 'num_problems': len(test_problem_info),
                 'mean_steps': float(mean_steps),
-                'mean_efficiency': float(mean_efficiency),
+                'mean_budget_left': float(mean_budget_left),
                 'elapsed_time': float(test_elapsed),
             }
             with open(test_results_path, 'w') as f:
@@ -901,7 +901,7 @@ class PolicyTrainer:
                 metric_dict={
                     'test/success_rate': success_rate,
                     'test/mean_steps': mean_steps,
-                    'test/mean_efficiency': mean_efficiency,
+                    'test/mean_budget_left': mean_budget_left,
                     'test/num_successful': float(success_count),
     }
 )
@@ -985,7 +985,7 @@ class PolicyTrainer:
                     test_metrics = self.log_metrics('test', step, test_info)
                     print(f"  [Current Success rate on TEST | Step: {step}]  "
                         f"Solved = {test_metrics['Success rate']:.1%}  "
-                        f"Efficiency = {test_metrics['Mean efficiency']:.3f}")
+                        f"Budget left = {test_metrics['Mean budget left']:.3f}")
 
                     # Steps to target
                     if self.steps_to_target is None and test_metrics['Success rate'] >= target_success_rate:

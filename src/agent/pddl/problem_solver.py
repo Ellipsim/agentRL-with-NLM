@@ -232,8 +232,8 @@ class ProblemSolver:
             - ``"max_actions"``: the budget used
             - ``"goal_reached"``: same as ``is_solved[i]``
             - ``"success"``: alias for goal_reached
-            - ``"efficiency"``: float in [0, 1] (1.0 if efficient, 0.0 if failed)
-            - ``"solution_ratio"``: steps / max_actions
+            - ``"budget_left"``: float in [0, 1]
+            - ``"budget_used"``: steps / max_actions
             - ``"action_history"``: ordered list of actions
             - ``"num_objects"``: dict mapping type-name → count
             - ``"num_goal_atoms"``: number of goal atoms
@@ -277,7 +277,7 @@ class ProblemSolver:
         # ---- Build per-problem info and assign rewards ----
         problem_info_list = []
         for i, problem in enumerate(problems):
-            obj_types = problem.initial_state.types
+            obj_types = problem.initial_state.objects  # list of per-instance types
             num_objects = {}
             for t in set(obj_types):
                 num_objects[t] = obj_types.count(t)
@@ -287,11 +287,11 @@ class ProblemSolver:
             
             # Calculate problem-level metrics (like NeSIG's problem info)
             if goal_reached:
-                efficiency = 1.0 - (num_steps / list_max_actions[i]) if list_max_actions[i] > 0 else 1.0
-                solution_ratio = num_steps / list_max_actions[i] if list_max_actions[i] > 0 else 0.0
+                budget_left = 1.0 - (num_steps / list_max_actions[i]) if list_max_actions[i] > 0 else 1.0
+                budget_used = num_steps / list_max_actions[i] if list_max_actions[i] > 0 else 0.0
             else:
-                efficiency = 0.0
-                solution_ratio = 1.0 if num_steps == list_max_actions[i] else 0.0
+                budget_left = 0.0
+                budget_used = 1.0 if num_steps == list_max_actions[i] else 0.0
 
             problem_info = {
                 "num_steps": num_steps,
@@ -299,11 +299,12 @@ class ProblemSolver:
                 "goal_reached": goal_reached,
                 "truncated": not goal_reached,
                 "success": goal_reached,  # NOTE: Alias 
-                "efficiency": efficiency,
-                "solution_ratio": solution_ratio,
+                "budget_left": budget_left,
+                "budget_used": budget_used,
                 "action_history": problem.action_history,
                 "num_objects": num_objects,
                 "num_goal_atoms": len(problem.goal) if problem.goal else 0,
+                "num_blocks": num_objects.get('block', 0),
             }
 
             # ---- Calculate rewards for this problem's trajectory ----

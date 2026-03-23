@@ -13,13 +13,13 @@ Usage:
         --student-checkpoint experiments/0b3e3f89/checkpoints/last.ckpt \
         --device gpu \
         --seed 1 \
-        --steps 200 \
+        --steps 50 \
         --num-problems-train 25 \
-        --max-init-actions-train 10 \
-        --max-goal-actions-train 10 \
+        --max-init-actions-train 25 \
+        --max-goal-actions-train 25 \
         --nesig-lr 1e-2 \
         --nesig-ppo-epochs 2 \
-        --r-eventual-consistency -10 \
+        --r-eventual-consistency -1 \
         --train-mode supersede
 """
 
@@ -29,7 +29,6 @@ import json
 import math
 import os
 import shutil
-import tempfile
 import torch
 from copy import deepcopy
 from pathlib import Path
@@ -104,7 +103,7 @@ def parse_arguments():
     parser.add_argument('--max-goal-actions-train', type=int, default=10)
     parser.add_argument('--nesig-ppo-epochs', type=int, default=3)
     parser.add_argument('--nesig-lr', type=float, default=1e-3)
-    parser.add_argument('--diversity-threshold', type=float, default=0.25)
+    parser.add_argument('--diversity-threshold', type=float, default=0.75)
     parser.add_argument('--perc-problems-diversity', type=float, default=1.0)
     parser.add_argument('--r-eventual-consistency', type=float, default=-1.0)
     parser.add_argument('--consistency-evaluator', choices=('dummy', 'domain'),
@@ -353,7 +352,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
     # ---- Difficulty evaluator ----
     difficulty_evaluator = StudentDifficultyEvaluator(
         max_actions=args.max_actions_train,
-        penalty=args.difficulty_penalty
+        penalty=args.difficulty_penalty,
     )
 
     # ---- Build trainers ----
@@ -434,16 +433,19 @@ def train(args, experiment_id, experiment_folder_path: Path):
         # ------------------------------------------------------------------
         print(f"\033[1m\033[93m[2] STUDENT SOLVES (frozen)\033[0m")
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            for i, p in enumerate(consistent_problems):
-                with open(Path(tmp_dir) / f'problem_{i}.pddl', 'w') as f:
-                    f.write(p.dump_to_pddl(f'problem_{i}'))
+        # Persistent debug folder — problems survive after the run
+        debug_dir = experiment_folder_path / 'debug_problems' / f'step_{current_step}'
+        debug_dir.mkdir(parents=True, exist_ok=True)
 
-            student_problems = load_problems_from_dir(
-                tmp_dir, args.domain_path,
-                len(consistent_problems),
-                max_actions=args.max_actions_train,
-            )
+        for i, p in enumerate(consistent_problems):
+            with open(debug_dir / f'problem_{i}.pddl', 'w') as f:
+                f.write(p.dump_to_pddl(f'problem_{i}'))
+
+        student_problems = load_problems_from_dir(
+            str(debug_dir), args.domain_path,
+            len(consistent_problems),
+            max_actions=args.max_actions_train,
+        )
 
         with torch.no_grad():
             _, problem_info, _, _ = student_trainer._solve_and_collect_trajectories(
@@ -466,14 +468,40 @@ def train(args, experiment_id, experiment_folder_path: Path):
             info['num_steps'] / args.max_actions_train
             for info in problem_info
         ) / len(problem_info) if problem_info else 0.0
+        # ── Diagnostic block ──────────────────────────────────────────────
+        block_counts = [info['num_blocks'] for info in problem_info]
+        summary = difficulty_evaluator.summary()
 
-        print(f"  Consistency rate : {consistency_rate:.1%} "
-              f"({len(consistent_problems)}/{args.num_problems_train})")
-        print(f"  Student solved   : {num_solved}/{len(problem_info)} "
-              f"({fraction_solved:.1%})")
-        print(f"  Mean diff reward : {mean_diff:.3f}")
-        print(f"  Mean budget used : {mean_budget_used:.1%}")
-        print(f"  Mean steps       : {mean_steps:.1f}/{args.max_actions_train}")
+        print(f"\n  {'─'*50}")
+        print(f"  STEP {current_step} DIAGNOSTICS")
+        print(f"  {'─'*50}")
+
+        # Problem generation
+        print(f"  [Generation]")
+        print(f"    Consistent     : {num_consistent}/{num_total} ({consistency_rate:.1%})")
+        print(f"    Block counts   : min={min(block_counts)} max={max(block_counts)} "
+            f"unique={sorted(set(block_counts))}")
+
+        # Student performance
+        print(f"  [Student]")
+        print(f"    Solved         : {num_solved}/{len(problem_info)} ({fraction_solved:.1%})")
+        print(f"    Mean steps     : {mean_steps:.1f} / {args.max_actions_train}")
+        print(f"    Mean budget    : {mean_budget_used:.1%}")
+
+        # Difficulty reward breakdown
+        print(f"  [Difficulty reward]")
+        print(f"    Frontier       : {summary['frontier']:.2f} blocks")
+        print(f"    Target         : {summary['target']:.2f} blocks")
+        print(f"    Reward mean    : {mean_diff:.4f}")
+        print(f"    Reward min/max : {min(difficulty_rewards):.4f} / {max(difficulty_rewards):.4f}")
+
+        # Per-bucket LP state
+        print(f"  [LP per bucket]")
+        for nb, stats in summary['buckets'].items():
+            ready = "ready" if stats['ready'] else f"warming ({stats['n_updates']}/5)"
+            print(f"    {nb:>2} blocks: success={stats['success_rate']:.3f} "
+                f"lp={stats['lp']:+.4f}  [{ready}]")
+        print(f"  {'─'*50}\n")
 
         # ------------------------------------------------------------------
         # 3. Teacher PPO update on ALL trajectories
@@ -511,6 +539,14 @@ def train(args, experiment_id, experiment_folder_path: Path):
                               global_step=current_step)
             writer.add_scalar('Teacher/num_consistent', len(consistent_problems),
                               global_step=current_step)
+            summary = difficulty_evaluator.summary()
+            writer.add_scalar('Teacher/frontier', summary['frontier'], global_step=current_step)
+            writer.add_scalar('Teacher/target',   summary['target'],   global_step=current_step)
+            for nb, stats in summary['buckets'].items():
+                writer.add_scalar(f'Teacher/LP_{nb}blocks',
+                                stats['lp'],           global_step=current_step)
+                writer.add_scalar(f'Teacher/success_rate_{nb}blocks',
+                                stats['success_rate'], global_step=current_step)
 
         # ------------------------------------------------------------------
         # Checkpointing

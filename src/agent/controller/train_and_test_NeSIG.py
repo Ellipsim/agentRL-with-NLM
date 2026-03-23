@@ -779,7 +779,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
                 test_metrics = student_trainer.log_metrics('test', current_step, test_info)
                 print(f"  \033[1m\033[95m[TEST step {current_step}]\033[0m "
                       f"success={test_metrics['Success rate']:.1%}  "
-                      f"efficiency={test_metrics['Mean efficiency']:.3f}  "
+                      f"budget left={test_metrics['Mean budget left']:.3f}  "
                       f"solved={int(test_metrics['Num successful'])}/{len(test_problems)}")
         else:
             print(f"    Skipping PPO: {len(samples)} < {args.min_samples_train}")
@@ -827,7 +827,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
         )
     test_metrics = student_trainer.log_metrics('test', current_step, test_info)
     print(f"  success={test_metrics['Success rate']:.1%}  "
-        f"efficiency={test_metrics['Mean efficiency']:.3f}  "
+        f"budget left={test_metrics['Mean budget left']:.3f}  "
         f"solved={int(test_metrics['Num successful'])}/{len(test_problems)}")
 
     student_trainer.close_writers()
