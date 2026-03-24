@@ -22,5 +22,6 @@
 	(on obj1 obj0)
 	(on obj2 obj1)
 	(on obj3 obj2)
+	(on obj5 obj4)
 ))
 )

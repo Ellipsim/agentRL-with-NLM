@@ -129,11 +129,16 @@ def parse_arguments():
                         help="Max init actions for NeSIG problem generation (controls problem size)")
     parser.add_argument('--max-goal-actions-train', type=int, default=10,
                             help="Max goal actions for NeSIG problem generation")
-    parser.add_argument('--nesig-ppo-epochs', type=int, default=3,
-                            help="PPO epochs for teacher update")
-    parser.add_argument('--nesig-lr', type=float, default=1e-3,
-                            help="Learning rate for teacher")
-    parser.add_argument('--diversity-threshold', type=float, default=0.05)
+
+    parser.add_argument('--nesig_init_lr',         type=float, default=1e-2)
+    parser.add_argument('--nesig_init_ppo_epochs', type=int,   default=2)
+    parser.add_argument('--nesig_init_epsilon',    type=float, default=0.2)
+
+    parser.add_argument('--nesig_goal_lr',         type=float, default=1e-3)
+    parser.add_argument('--nesig_goal_ppo_epochs', type=int,   default=5)
+    parser.add_argument('--nesig_goal_epsilon',    type=float, default=0.2)
+
+    parser.add_argument('--diversity-threshold', type=float, default=0.5)
     parser.add_argument('--perc-problems-diversity', type=float, default=1.0)
     parser.add_argument('--r-eventual-consistency', type=float, default=-1.0)
     parser.add_argument('--consistency-evaluator', choices=('dummy', 'domain'), default='domain')
@@ -262,16 +267,16 @@ def build_nesig_components(args, device):
         ML_model='NLM',
         # ---- init phase PPO args ----
         init_term_action_prob=0.0,
-        init_lr=args.nesig_lr,
-        init_PPO_epochs=args.nesig_ppo_epochs,
-        init_epsilon=0.2,
+        init_lr=args.nesig_init_lr,
+        init_PPO_epochs=args.nesig_init_ppo_epochs,
+        init_epsilon=args.nesig_init_epsilon,
         init_entropy_coeffs=0.0,
         init_lifted_entropy_weight=0.5,
         # ---- goal phase PPO args ----
         goal_term_action_prob=0.0,
-        goal_lr=args.nesig_lr,
-        goal_PPO_epochs=args.nesig_ppo_epochs,
-        goal_epsilon=0.2,
+        goal_lr=args.nesig_goal_lr,
+        goal_PPO_epochs=args.nesig_goal_ppo_epochs,
+        goal_epsilon=args.nesig_goal_epsilon,
         goal_entropy_coeffs=0.0,
         goal_lifted_entropy_weight=0.5,
     )
@@ -742,7 +747,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
                     nesig_only_problems, args.max_actions_train
                 )
 
-        new_difficulty_rewards = difficulty_evaluator.get_difficulty(nesig_problem_info)
+        new_difficulty_rewards = difficulty_evaluator.get_difficulty(nesig_problem_info, consistent_problems)
 
         num_solved = sum(1 for d in new_difficulty_rewards if d > 0)
         mean_diff = sum(new_difficulty_rewards) / len(new_difficulty_rewards) \
@@ -755,6 +760,23 @@ def train(args, experiment_id, experiment_folder_path: Path):
         for traj, diff_reward in zip(consistent_trajectories, new_difficulty_rewards):
             if traj:
                 traj[-1]['difficulty_reward'] = diff_reward
+
+        debug = True
+        if (debug):
+            complexities = [r for r in new_difficulty_rewards if r != -1.0]
+            empty_goals  = sum(1 for r in new_difficulty_rewards if r == -1.0)
+
+            print(f"    Empty goals      : {empty_goals}/{len(new_difficulty_rewards)}")
+            if complexities:
+                print(f"    Complexity mean  : {sum(complexities)/len(complexities):.3f}")
+                print(f"    Complexity min   : {min(complexities):.3f}")
+                print(f"    Complexity max   : {max(complexities):.3f}")
+
+
+            if consistent_problems is not None:
+                block_counts = [len(p.initial_state.objects) for p in consistent_problems]
+                print(f"    Block counts     : min={min(block_counts)} max={max(block_counts)} "
+                    f"mean={sum(block_counts)/len(block_counts):.1f}")
 
         # ------------------------------------------------------------------
         # 4. Student PPO update
