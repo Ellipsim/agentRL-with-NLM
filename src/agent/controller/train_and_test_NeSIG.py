@@ -16,17 +16,17 @@ Usage:
         --domain-path data/domains/blocksworld.pddl \
         --device gpu \
         --seed 1 \
-        --steps 200 \
+        --steps 50 \
         --num-problems-train 30 \
         --num-problems-test 80 \
         --test-problems-dir data/problems/test \
         --test-period 10 \
         --teacher-update-period 1 \
-        --max-init-actions-train 10 \
-        --max-goal-actions-train 10 \
+        --max-init-actions-train 30 \
+        --max-goal-actions-train 15 \
         --nesig-warmup 30 \
-        --nesig-lr 1e-2 \
-        --nesig-ppo-epochs 2 \
+        --nesig-lr 1e-3 \
+        --nesig-ppo-epochs 3 \
         --train-mode supersede \
         --test-mode supersede
 """
@@ -65,6 +65,9 @@ for domain_key in DOMAIN_INFO:
 from src.nesig import constants as nesig_constants
 nesig_constants.PLANNER_SCRIPTS_PATH = _nesig_teacher_root / 'src/nesig/libs/planner-scripts'
 
+from src.agent.teacher.student_difficulty_evaluator import (
+    LossBasedDifficultyEvaluator, StudentDifficultyEvaluator
+)
 
 # ---- Student imports ----
 from src.agent.constants import (
@@ -87,8 +90,6 @@ from src.agent.controller.train_and_test_ACG import (
     save_experiment_info, read_last_train_it, create_policy,
     save_level_checkpoint,
 )
-from src.agent.teacher.student_difficulty_evaluator import StudentDifficultyEvaluator
-
 
 # =====================================================================
 # Argument Parsing
@@ -106,7 +107,7 @@ def parse_arguments():
     parser.add_argument('--nesig-domain', type=str, default='blocksworld',
                         choices=tuple(DOMAIN_INFO.keys()),
                         help="NeSIG domain name (must match domain-path)")
-    
+
     # ---- Test problems evaluation ----
     parser.add_argument('--test-problems-dir', type=str, default='./data/problems/test',
                             help="Directory with test problems. Used as-is unless "
@@ -130,21 +131,21 @@ def parse_arguments():
     parser.add_argument('--max-goal-actions-train', type=int, default=10,
                             help="Max goal actions for NeSIG problem generation")
 
-    parser.add_argument('--nesig_init_lr',         type=float, default=1e-2)
-    parser.add_argument('--nesig_init_ppo_epochs', type=int,   default=2)
+    parser.add_argument('--nesig_init_lr',         type=float, default=1e-3)
+    parser.add_argument('--nesig_init_ppo_epochs', type=int,   default=5)
     parser.add_argument('--nesig_init_epsilon',    type=float, default=0.2)
 
-    parser.add_argument('--nesig_goal_lr',         type=float, default=1e-3)
-    parser.add_argument('--nesig_goal_ppo_epochs', type=int,   default=5)
+    parser.add_argument('--nesig_goal_lr',         type=float, default=1e-2)
+    parser.add_argument('--nesig_goal_ppo_epochs', type=int,   default=6)
     parser.add_argument('--nesig_goal_epsilon',    type=float, default=0.2)
 
-    parser.add_argument('--diversity-threshold', type=float, default=0.5)
+    parser.add_argument('--diversity-threshold', type=float, default=0.05)
     parser.add_argument('--perc-problems-diversity', type=float, default=1.0)
     parser.add_argument('--r-eventual-consistency', type=float, default=-1.0)
     parser.add_argument('--consistency-evaluator', choices=('dummy', 'domain'), default='domain')
     parser.add_argument('--policy-type', choices=('random', 'PPO'), default='PPO')
-    
-    
+
+
     # ---- Student ----
     parser.add_argument('--reward-goal-reached', type=float, default=1.0)
     parser.add_argument('--reward-step', type=float, default=-1)
@@ -152,7 +153,7 @@ def parse_arguments():
                         help="Action budget for student during training "
                              "(defaults to max-actions-test if not set)")
 
-    # ---- Shared training ----    
+    # ---- Shared training ----
     parser.add_argument('--steps', type=int, default=200,
                             help="Total co-training iterations")
     parser.add_argument('--teacher-update-period', type=int, default=1,
@@ -165,7 +166,7 @@ def parse_arguments():
                             help="NeSIG-only warmup steps before co-training. Set 0 to disable.")
     parser.add_argument('--min-samples-train', type=int, default=10)
 
-    
+
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--grad-clip', type=float, default=0.5)
     parser.add_argument('--disc-factor', type=float, default=0.99)
@@ -192,6 +193,12 @@ def parse_arguments():
     parser.add_argument('--test-mode', choices=('skip', 'supersede', 'missing'),
                         default='missing')
     parser.add_argument('--experiments-dir', type=str, default='./experiments')
+
+    # ---- Planer ----
+    parser.add_argument('--planner-time-limit',   type=int, default=30,
+                    help="Seconds per problem for FastDownward")
+    parser.add_argument('--max-workers-planner',  type=int, default=8,
+                        help="Parallel planner processes")
 
     # ---- NLM model args ----
     StudentNLMWrapperActor.add_model_specific_args(parser)
@@ -232,7 +239,7 @@ def get_experiment_id(args):
 # NeSIG Setup
 # =====================================================================
 
-def build_nesig_components(args, device):
+def build_nesig_components(args, device, difficulty_evaluator=None):
     """
     Build NeSIG's parsed domain info, init/goal policies, and problem generator.
     The difficulty evaluator is set to None here — it is injected after the
@@ -313,7 +320,7 @@ def build_nesig_components(args, device):
         perc_problems_diversity=args.perc_problems_diversity,
     )
 
-    # Problem generator without difficulty evaluator — injected later
+    # Problem generator
     problem_generator = ProblemGenerator(
         parsed_domain_info['parser'],
         init_policy, goal_policy,
@@ -321,7 +328,7 @@ def build_nesig_components(args, device):
         parsed_domain_info['goal_predicates'],
         parsed_domain_info['init_state_info'],
         parsed_domain_info['allowed_virtual_objects'],
-        difficulty_evaluator=None,
+        difficulty_evaluator=difficulty_evaluator,
         diversity_evaluator=diversity_evaluator,
     )
 
@@ -539,19 +546,18 @@ def train(args, experiment_id, experiment_folder_path: Path):
         student_policy.to('cuda')
 
     # ---- Build NeSIG teacher ----
+    loss_evaluator = LossBasedDifficultyEvaluator()
+    student_difficulty_evaluator = StudentDifficultyEvaluator(
+        loss_evaluator=loss_evaluator,
+        difficulty_penalty=args.difficulty_penalty,
+    )
     nesig_args, parsed_domain_info, init_policy, goal_policy, problem_generator = \
-        build_nesig_components(args, device)
+        build_nesig_components(args, device, difficulty_evaluator=student_difficulty_evaluator)
 
     # Move NeSIG policies to device
     if device.type == 'cuda':
         init_policy.to('cuda')
         goal_policy.to('cuda')
-
-    # ---- Student performance evaluator for NeSIG reward ----
-    difficulty_evaluator = StudentDifficultyEvaluator(
-        max_actions=args.max_actions_train,
-        penalty=args.difficulty_penalty,
-    )
 
     # ---- Build trainers ----
     student_trainer = StudentTrainer(
@@ -663,6 +669,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
 
     while current_step <= args.steps:
         print(f"\033[1m\033[94mStep {current_step}/{args.steps}\033[0m")
+        mean_difficulty = 0.0
 
         # ------------------------------------------------------------------
         # 1. Teacher generates one batch of problems
@@ -670,7 +677,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
         print(f"\033[1m\033[93m[1] TEACHER GENERATES PROBLEMS\033[0m")
 
         with torch.no_grad():
-            problems, all_nesig_infos, all_nesig_trajectories, _, _ = \
+            problems, all_nesig_infos, all_nesig_trajectories, _, num_unique = \
                 nesig_trainer._generate_problems_and_trajectories(
                     args.num_problems_train,
                     args.max_init_actions_train,
@@ -687,6 +694,14 @@ def train(args, experiment_id, experiment_folder_path: Path):
         consistent_infos        = [info for _, info, _ in consistent]
         consistent_trajectories = [traj for _, _, traj in consistent]
 
+        diversity_rewards = [
+            traj[-1]['diversity_reward']
+            for traj in all_nesig_trajectories
+            if traj  # guard against empty trajectory
+        ]
+        mean_diversity = sum(diversity_rewards) / len(diversity_rewards) if diversity_rewards else 0.0
+        print(f"    Mean diversity reward : {mean_diversity:.4f}")
+
         num_consistent = len(consistent_problems)
         num_total = len(problems)
         consistency_rate = num_consistent / num_total if num_total > 0 else 0.0
@@ -696,7 +711,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
             print("  No consistent problems generated, skipping step.")
             current_step += 1
             continue
-
+                 
         # Save consistent problems to disk for student
         step_problem_dir = Path(args.data_dir) / f'step_{current_step}'
         step_problem_dir.mkdir(parents=True, exist_ok=True)
@@ -705,6 +720,28 @@ def train(args, experiment_id, experiment_folder_path: Path):
                 f.write(p.dump_to_pddl(f'problem_{i}'))
         replay_buffer.register_dir(str(step_problem_dir))
 
+        # Debug info
+        init_lengths = [info['init_phase_length'] for info in all_nesig_infos]
+        print(f"    Mean init phase length: {sum(init_lengths)/len(init_lengths):.2f}")
+
+        goal_lengths = [info['goal_phase_length'] for info in all_nesig_infos]
+        print(f"    Mean goal phase length: {sum(goal_lengths)/len(goal_lengths):.2f}")
+        print(f"    Min goal phase length : {min(goal_lengths)}")
+
+        # Goal atom stats — key for diagnosing trivial problems
+        goal_atoms = [sum(info['num_atoms_goal_state'].values()) for info in consistent_infos]
+        if goal_atoms:
+            print(f"    Mean goal atoms       : {sum(goal_atoms)/len(goal_atoms):.2f}")
+            print(f"    Min goal atoms        : {min(goal_atoms)}")
+
+        # Difficulty signal
+        if loss_evaluator._ema_critic is not None:
+            print(f"    Difficulty EMAs       : "
+                f"critic={loss_evaluator._ema_critic:.4f}, "
+                f"ppo={loss_evaluator._ema_ppo:.4f}")
+        else:
+            print(f"    Difficulty EMAs       : N/A (no PPO update yet)")
+
         # ------------------------------------------------------------------
         # 2. Student loads problems
         # ------------------------------------------------------------------
@@ -712,99 +749,91 @@ def train(args, experiment_id, experiment_folder_path: Path):
 
         # TODO: Check side-effects
         # NeSIG problems without replay — for clean difficulty signal
-        nesig_only_problems = load_problems_from_dir(
-            str(step_problem_dir), args.domain_path,
-            len(consistent_problems),
-            max_actions=args.max_actions_train,
-        )
+        # nesig_only_problems = load_problems_from_dir(
+        #     str(step_problem_dir), args.domain_path,
+        #     len(consistent_problems),
+        #     max_actions=args.max_actions_train,
+        # )
 
         # Student problems with extra replay problems added on top
         student_problems = load_problems_from_dir(
             str(step_problem_dir), args.domain_path,
             len(consistent_problems),
             max_actions=args.max_actions_train,
-            replay_buffer=replay_buffer,
-            replay_extra=args.replay_extra,
+            # replay_buffer=replay_buffer,
+            # replay_extra=args.replay_extra,
         )
 
         # ------------------------------------------------------------------
-        # 3. Student attempts problems → trajectories + difficulty signal
-        #    (BEFORE PPO update so difficulty is unbiased)
+        # 3. Student solves
         # ------------------------------------------------------------------
-        print(f"\033[1m\033[93m[3] STUDENT SOLVES + DIFFICULTY\033[0m")
-
-        # Trajectories with replay buffer for student
+        print(f"\033[1m\033[93m[3] STUDENT SOLVES PROBLEMS\033[0m")
+        
         with torch.no_grad():
             _, problem_info, trajectories, _ = \
                 student_trainer._solve_and_collect_trajectories(
                     student_problems, args.max_actions_train
                 )
-            
-        # Trajectories without replay buffer for nesig feedback    
-        with torch.no_grad():
-            _, nesig_problem_info, _, _ = \
-                student_trainer._solve_and_collect_trajectories(
-                    nesig_only_problems, args.max_actions_train
-                )
 
-        new_difficulty_rewards = difficulty_evaluator.get_difficulty(nesig_problem_info, consistent_problems)
-
-        num_solved = sum(1 for d in new_difficulty_rewards if d > 0)
-        mean_diff = sum(new_difficulty_rewards) / len(new_difficulty_rewards) \
-            if new_difficulty_rewards else 0
-        print(f"  [NESIG-STUDENT METRICS]")
-        print(f"    Student solved   : {num_solved}/{len(new_difficulty_rewards)}")
-        print(f"    Mean difficulty  : {mean_diff:.3f}  (0=trivial, 1=hard, penalty=failed)")
-
-        # Inject difficulty into NeSIG trajectories
-        for traj, diff_reward in zip(consistent_trajectories, new_difficulty_rewards):
-            if traj:
-                traj[-1]['difficulty_reward'] = diff_reward
-
-        debug = True
-        if (debug):
-            complexities = [r for r in new_difficulty_rewards if r != -1.0]
-            empty_goals  = sum(1 for r in new_difficulty_rewards if r == -1.0)
-
-            print(f"    Empty goals      : {empty_goals}/{len(new_difficulty_rewards)}")
-            if complexities:
-                print(f"    Complexity mean  : {sum(complexities)/len(complexities):.3f}")
-                print(f"    Complexity min   : {min(complexities):.3f}")
-                print(f"    Complexity max   : {max(complexities):.3f}")
-
-
-            if consistent_problems is not None:
-                block_counts = [len(p.initial_state.objects) for p in consistent_problems]
-                print(f"    Block counts     : min={min(block_counts)} max={max(block_counts)} "
-                    f"mean={sum(block_counts)/len(block_counts):.1f}")
+        # TODO: se podría fusionar paso 3 y 4
+        
+        samples = student_trainer._process_trajectories(trajectories, problem_info)
 
         # ------------------------------------------------------------------
         # 4. Student PPO update
         # ------------------------------------------------------------------
         print(f"\033[1m\033[93m[4] STUDENT PPO UPDATE\033[0m")
-        samples = student_trainer._process_trajectories(trajectories, problem_info)
+        
         if len(samples) >= args.min_samples_train:
             student_trainer._perform_train_step(samples)
             student_trainer.save_policy(save_best=False)
-            student_trainer.policy.curr_logging_it += 1
-            if current_step % args.log_period == 0:
-                with torch.no_grad():
-                    student_trainer.log_metrics(
-                        'train', current_step, problem_info, trajectories=trajectories
-                    )
-            if test_problems and args.test_period != -1 \
-                    and current_step % args.test_period == 0:
-                with torch.no_grad():
-                    _, test_info, _, _ = student_trainer._solve_and_collect_trajectories(
-                        test_problems, args.max_actions_test
-                    )
-                test_metrics = student_trainer.log_metrics('test', current_step, test_info)
-                print(f"  \033[1m\033[95m[TEST step {current_step}]\033[0m "
-                      f"success={test_metrics['Success rate']:.1%}  "
-                      f"budget left={test_metrics['Mean budget left']:.3f}  "
-                      f"solved={int(test_metrics['Num successful'])}/{len(test_problems)}")
+
+            if current_step % student_trainer.args.log_period == 0:
+                student_trainer.log_metrics('train', current_step, problem_info, trajectories=trajectories)
         else:
             print(f"    Skipping PPO: {len(samples)} < {args.min_samples_train}")
+        
+        student_trainer.policy.curr_logging_it += 1
+
+        # Test evaluation
+        if args.test_period != -1 and current_step % args.test_period == 0:
+            print(f"\033[1m\033[95m[TEST step {current_step}]\033[0m")
+            with torch.no_grad():
+                _, test_info, _, _ = student_trainer._solve_and_collect_trajectories(
+                    test_problems, args.max_actions_test
+                )
+            test_metrics = student_trainer.log_metrics('test', current_step, test_info)
+            print(f"  success={test_metrics['Success rate']:.1%}  "
+                  f"budget left={test_metrics['Mean budget left']:.3f}  "
+                  f"solved={int(test_metrics['Num successful'])}/{len(test_problems)}")
+        
+        # Difficulty & Consistency logging
+        if current_step % args.log_period == 0:
+            writer = student_trainer.writers['train']
+
+            # Consistency
+            writer.add_scalar('NeSIG/consistency_rate', consistency_rate, global_step=current_step)
+            writer.add_scalar('NeSIG/num_consistent', num_consistent, global_step=current_step)
+
+            # Diversity
+            writer.add_scalar('NeSIG/mean_diversity_reward', mean_diversity, global_step=current_step)
+
+            # Difficulty 
+            writer.add_scalar('NeSIG/mean_difficulty_reward', mean_difficulty, global_step=current_step)
+            
+
+            # Trivial problems
+            already_solved = sum(1 for info in problem_info if info.get('num_steps', 1) == 0)
+            trivial_rate = already_solved / len(problem_info) if problem_info else 0.0
+            writer.add_scalar('NeSIG/trivial_problem_rate', trivial_rate, global_step=current_step)
+
+            # Print summary
+            print(f"  \033[1m\033[96m[METRICS]\033[0m")
+            print(f"    Consistency     : {consistency_rate:.1%} ({num_consistent}/{num_total})")
+            print(f"    Trivial problems: {already_solved}/{len(problem_info)} ({trivial_rate:.1%})")
+            print(f"    Diversity reward: {mean_diversity:.4f}")
+            print(f"    Difficulty reward: {mean_difficulty:.4f}")
+
 
         # ------------------------------------------------------------------
         # 5. Teacher PPO update (every teacher_update_period steps)
@@ -812,12 +841,16 @@ def train(args, experiment_id, experiment_folder_path: Path):
         if current_step % args.teacher_update_period == 0:
             print(f"\033[1m\033[93m[5] TEACHER PPO UPDATE\033[0m")
 
-            # Inject difficulty into consistent trajectories only
-            for traj, diff_reward in zip(consistent_trajectories, new_difficulty_rewards):
-                if traj:
-                    traj[-1]['difficulty_reward'] = diff_reward
+            difficulty = loss_evaluator.get_difficulty(student_trainer.policy, len(consistent_problems))
+            mean_difficulty = difficulty[0]
+            print(f"    Mean difficulty reward: {mean_difficulty:.4f}")
 
-            # Train on ALL trajectories — inconsistent ones receive consistency penalty
+            # Inject into the last sample of each consistent trajectory
+            for traj, diff in zip(consistent_trajectories, difficulty):
+                if traj:
+                    traj[-1]['difficulty_reward'] = diff
+
+            # Then teacher PPO update uses these updated trajectories
             with torch.no_grad():
                 init_trajectories, goal_trajectories = nesig_trainer._process_trajectories(
                     all_nesig_trajectories, all_nesig_infos,
@@ -826,6 +859,18 @@ def train(args, experiment_id, experiment_folder_path: Path):
                 )
             nesig_trainer._perform_train_step(init_policy, init_trajectories)
             nesig_trainer._perform_train_step(goal_policy, goal_trajectories)
+          
+        # Logging  
+        if current_step % args.log_period == 0:
+            nesig_trainer.log_metrics(
+                'train', current_step,
+                problems, all_nesig_infos,
+                num_unique_problems=num_unique,
+                trajectories=all_nesig_trajectories
+            )
+
+        nesig_trainer.init_policy.curr_logging_it +=1
+        nesig_trainer.goal_policy.curr_logging_it +=1
 
         # ------------------------------------------------------------------
         # Checkpointing
@@ -873,8 +918,8 @@ def main(args):
     experiment_folder_path = Path(args.experiments_dir) / experiment_id
 
     train(args, experiment_id, experiment_folder_path)
-    
-    # TODO: El test está integrado en train, cambiarlo 
+
+    # TODO: El test está integrado en train, cambiarlo
 
     print("\n>>> Done!")
     print(f">>> Experiment ID: {experiment_id}\n")

@@ -393,6 +393,10 @@ class PPOSolverPolicy(GenerativePolicy):
                 'Clip Fraction', self.clip_fraction_sum / n,
                 global_step=self.curr_logging_it.item(),
             )
+            
+        self.last_critic_loss = self.critic_loss_sum / n if n > 0 else 0.0
+        self.last_ppo_loss = self.ppo_loss_sum / n if n > 0 else 0.0
+        self.last_approx_kl = self.approx_kl_sum / n if n > 0 else 0.0
 
         # Reset counters
         self.total_norm_actor_sum = 0.0

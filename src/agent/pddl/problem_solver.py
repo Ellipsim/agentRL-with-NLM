@@ -97,6 +97,13 @@ class ProblemSolver:
         is_solved = [False] * num_problems
         is_terminated = [False] * num_problems
 
+        # ── Check if goal is already satisfied before any action ──────────
+        for i, problem in enumerate(problems):
+            if problem.is_goal_reached():
+                is_solved[i] = True
+                is_terminated[i] = True
+
+
         while not all(is_terminated):
             # ---- Active problem indices and instances --------------------
             active = [(i, problems[i]) for i in range(num_problems) if not is_terminated[i]]

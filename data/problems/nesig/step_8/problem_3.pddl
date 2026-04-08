@@ -14,6 +14,6 @@
 )
 
 (:goal (and
-	(on obj0 obj1)
+	(on obj1 obj0)
 ))
 )

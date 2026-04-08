@@ -7,8 +7,8 @@
 )
 
 (:init
+	(clear obj7)
 	(clear obj8)
-	(clear obj9)
 	(clear obj12)
 	(handempty)
 	(on obj1 obj0)
@@ -18,12 +18,12 @@
 	(on obj5 obj4)
 	(on obj6 obj5)
 	(on obj7 obj6)
-	(on obj8 obj7)
+	(on obj10 obj9)
 	(on obj11 obj10)
 	(on obj12 obj11)
 	(ontable obj0)
+	(ontable obj8)
 	(ontable obj9)
-	(ontable obj10)
 )
 
 (:goal (and
@@ -33,9 +33,9 @@
 	(on obj4 obj3)
 	(on obj5 obj4)
 	(on obj6 obj5)
-	(on obj7 obj8)
-	(on obj8 obj9)
-	(on obj11 obj7)
-	(on obj12 obj6)
+	(on obj7 obj6)
+	(on obj10 obj9)
+	(on obj11 obj10)
+	(on obj12 obj11)
 ))
 )
