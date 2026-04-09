@@ -18,15 +18,12 @@ Usage:
         --seed 1 \
         --steps 50 \
         --num-problems-train 30 \
-        --num-problems-test 80 \
+        --num-problems-test 150 \
         --test-problems-dir data/problems/test \
         --test-period 10 \
-        --teacher-update-period 1 \
         --max-init-actions-train 30 \
-        --max-goal-actions-train 15 \
+        --max-goal-actions-train 40 \
         --nesig-warmup 30 \
-        --nesig-lr 1e-3 \
-        --nesig-ppo-epochs 3 \
         --train-mode supersede \
         --test-mode supersede
 """
@@ -139,7 +136,7 @@ def parse_arguments():
     parser.add_argument('--nesig_goal_ppo_epochs', type=int,   default=6)
     parser.add_argument('--nesig_goal_epsilon',    type=float, default=0.2)
 
-    parser.add_argument('--diversity-threshold', type=float, default=0.05)
+    parser.add_argument('--diversity-threshold', type=float, default=0.1)
     parser.add_argument('--perc-problems-diversity', type=float, default=1.0)
     parser.add_argument('--r-eventual-consistency', type=float, default=-1.0)
     parser.add_argument('--consistency-evaluator', choices=('dummy', 'domain'), default='domain')
@@ -666,10 +663,10 @@ def train(args, experiment_id, experiment_folder_path: Path):
     # Initialize problem cache before the loop
     consistent_problems = []
     cached_step_problem_dir = None
+    mean_difficulty = 0.0
 
     while current_step <= args.steps:
         print(f"\033[1m\033[94mStep {current_step}/{args.steps}\033[0m")
-        mean_difficulty = 0.0
 
         # ------------------------------------------------------------------
         # 1. Teacher generates one batch of problems
@@ -792,8 +789,10 @@ def train(args, experiment_id, experiment_folder_path: Path):
                 student_trainer.log_metrics('train', current_step, problem_info, trajectories=trajectories)
         else:
             print(f"    Skipping PPO: {len(samples)} < {args.min_samples_train}")
+            student_trainer.policy.last_critic_loss = 0.0
+            student_trainer.policy.last_ppo_loss = 0.0
         
-        student_trainer.policy.curr_logging_it += 1
+        student_trainer.policy.curr_logging_it = torch.tensor(current_step, dtype=torch.int32)
 
         # Test evaluation
         if args.test_period != -1 and current_step % args.test_period == 0:
@@ -869,8 +868,8 @@ def train(args, experiment_id, experiment_folder_path: Path):
                 trajectories=all_nesig_trajectories
             )
 
-        nesig_trainer.init_policy.curr_logging_it +=1
-        nesig_trainer.goal_policy.curr_logging_it +=1
+        nesig_trainer.init_policy.curr_logging_it = torch.tensor(current_step, dtype=torch.int32)
+        nesig_trainer.goal_policy.curr_logging_it = torch.tensor(current_step, dtype=torch.int32)
 
         # ------------------------------------------------------------------
         # Checkpointing

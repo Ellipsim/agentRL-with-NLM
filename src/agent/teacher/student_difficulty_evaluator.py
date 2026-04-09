@@ -10,7 +10,7 @@ from src.nesig.symbolic.pddl_problem import PDDLProblem as NeSIGProblem
 
 class LossBasedDifficultyEvaluator:
     def __init__(self, ema_alpha: float = 0.1,
-                 critic_weight: float = 0.5, ppo_weight: float = 0.5):
+                 critic_weight: float = 1, ppo_weight: float = 0):
         self.ema_alpha = ema_alpha
         self.critic_weight = critic_weight
         self.ppo_weight = ppo_weight
