@@ -7,40 +7,6 @@ from pathlib import Path
 from src.nesig.metrics.difficulty import DifficultyEvaluator as NeSIGDifficultyEvaluator
 from src.nesig.symbolic.pddl_problem import PDDLProblem as NeSIGProblem
 
-
-class LossBasedDifficultyEvaluator:
-    def __init__(self, ema_alpha: float = 0.1,
-                 critic_weight: float = 1, ppo_weight: float = 0):
-        self.ema_alpha = ema_alpha
-        self.critic_weight = critic_weight
-        self.ppo_weight = ppo_weight
-        self._ema_critic = None
-        self._ema_ppo = None
-
-    def get_difficulty(self, policy, num_problems: int) -> List[float]:
-        critic_loss = getattr(policy, 'last_critic_loss', 0.0)
-        ppo_loss = getattr(policy, 'last_ppo_loss', 0.0)
-
-        if self._ema_critic is None:
-            self._ema_critic = critic_loss + 1e-8
-            self._ema_ppo = ppo_loss + 1e-8
-        else:
-            self._ema_critic = self.ema_alpha * critic_loss + (1 - self.ema_alpha) * self._ema_critic
-            self._ema_ppo    = self.ema_alpha * ppo_loss    + (1 - self.ema_alpha) * self._ema_ppo
-
-        norm_critic = min(critic_loss / (self._ema_critic + 1e-8), 2.0)
-        norm_ppo    = min(ppo_loss    / (self._ema_ppo    + 1e-8), 2.0)
-
-        difficulty = self.critic_weight * norm_critic + self.ppo_weight * norm_ppo
-        return [difficulty] * num_problems
-
-    def summary(self) -> dict:
-        return {
-            'ema_critic': self._ema_critic or 0.0,
-            'ema_ppo':    self._ema_ppo or 0.0,
-        }
-
-
 class StudentDifficultyEvaluator(NeSIGDifficultyEvaluator):
     """
     NeSIG-compatible difficulty evaluator backed by student PPO loss.
@@ -59,28 +25,24 @@ class StudentDifficultyEvaluator(NeSIGDifficultyEvaluator):
 
     plan_args = ['student']
 
-    def __init__(self, loss_evaluator: LossBasedDifficultyEvaluator,
-                 difficulty_penalty: float = 0.0):
-        self._loss_evaluator = loss_evaluator
+    def __init__(self, difficulty_penalty: float = 0.0):
         self.difficulty_penalty = difficulty_penalty
 
-    def inject_difficulty(self, policy, nesig_trajectories: List[List[dict]]) -> float:
+    def inject_difficulty(self, per_problem_losses: List[float], nesig_trajectories: List[List[dict]]) -> float:
         """
-        Compute difficulty from student's latest losses and inject into
-        the last sample of each NeSIG trajectory.
+        Inject per-problem critic losses as difficulty rewards into NeSIG trajectories.
+        Must be called after _process_trajectories (losses already computed).
 
         Returns the mean difficulty reward for logging.
         """
-        difficulty = self._loss_evaluator.get_difficulty(
-            policy=policy,
-            num_problems=len(nesig_trajectories),
-        )[0]  # all same value
+        assert len(per_problem_losses) == len(nesig_trajectories), \
+            "per_problem_losses and nesig_trajectories must be aligned (one per problem)"
 
-        for traj in nesig_trajectories:
-            if traj:
-                traj[-1]['difficulty_reward'] = difficulty
+        for loss, nesig_traj in zip(per_problem_losses, nesig_trajectories):
+            if nesig_traj:
+                nesig_traj[-1]['difficulty_reward'] = loss
 
-        return difficulty
+        return sum(per_problem_losses) / len(per_problem_losses) if per_problem_losses else 0.0
 
     def get_difficulty(self, problem_list: List[Union[NeSIGProblem, Path]]) -> Tuple[List[dict], List[float]]:
         """

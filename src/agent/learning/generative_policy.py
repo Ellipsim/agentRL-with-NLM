@@ -366,31 +366,31 @@ class PPOSolverPolicy(GenerativePolicy):
         n = self.num_minibatches  # correct denominator for already-averaged losses
         if n > 0 and self.curr_logging_it.item() % self.hparams['log_period'] == 0:
             self.logger.experiment.add_scalars(
-                'Gradient Norm',
+                'Agent_PPO/Gradient Norm',
                 {'Actor': self.total_norm_actor_sum / n,
                  'Critic': self.total_norm_critic_sum / n},
                 global_step=self.curr_logging_it.item(),
             )
             self.logger.experiment.add_scalar(
-                'Critic Loss', self.critic_loss_sum / n,
+                'Agent_PPO/Critic Loss', self.critic_loss_sum / n,
                 global_step=self.curr_logging_it.item(),
             )
             self.logger.experiment.add_scalars(
-                'Actor Losses',
+                'Agent_PPO/Actor Losses',
                 {'PPO Loss': self.ppo_loss_sum / n,
                  'Entropy Loss': self.entropy_loss_sum / n},
                 global_step=self.curr_logging_it.item(),
             )
             self.logger.experiment.add_scalar(
-                'Policy Entropy', self.policy_entropy_sum / n,
+                'Agent_PPO/Policy Entropy', self.policy_entropy_sum / n,
                 global_step=self.curr_logging_it.item(),
             )
             self.logger.experiment.add_scalar(
-                'Approx KL', self.approx_kl_sum / n,
+                'Agent_PPO/Approx KL', self.approx_kl_sum / n,
                 global_step=self.curr_logging_it.item(),
             )
             self.logger.experiment.add_scalar(
-                'Clip Fraction', self.clip_fraction_sum / n,
+                'Agent_PPO/Clip Fraction', self.clip_fraction_sum / n,
                 global_step=self.curr_logging_it.item(),
             )
             

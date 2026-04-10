@@ -302,6 +302,37 @@ class PolicyTrainer:
         #         s['advantage'] = (s['advantage'] - mean_adv) / std_adv
 
         return samples
+    
+    def _process_trajectories_with_split(
+        self,
+        trajectories: List,
+        problem_info: List[dict],
+    ) -> Tuple[List[dict], List[List[dict]]]:
+        """
+        Wrapper around _process_trajectories that also returns per-problem
+        sample lists, needed for post-update loss computation.
+
+        Calls _process_trajectories once (so returns/advantages are computed
+        identically), then re-groups the flat sample list back by problem
+        using the original trajectory lengths as a key.
+
+        The flat `all_samples` return is identical to what _process_trajectories
+        returns, so this is a drop-in replacement at the call site in
+        train_and_test_NeSIG.py only.
+        """
+        # Record lengths before processing (processing is in-place, lengths unchanged)
+        traj_lengths = [len(traj) for traj in trajectories]
+
+        all_samples = self._process_trajectories(trajectories, problem_info)
+
+        # Re-group by problem using trajectory lengths
+        per_problem_samples = []
+        offset = 0
+        for length in traj_lengths:
+            per_problem_samples.append(all_samples[offset: offset + length])
+            offset += length
+
+        return all_samples, per_problem_samples
 
     # =====================================================================
     # Training Step (from NeSIG)
@@ -336,10 +367,10 @@ class PolicyTrainer:
         if hasattr(self, 'writers') and 'train' in self.writers:
             step = self.policy.curr_logging_it
             self.writers['train'].add_scalar(
-                'PPO/advantage_std_raw', std_adv_raw, global_step=step
+                'Agent_PPO/advantage_std_raw', std_adv_raw, global_step=step
             )
             self.writers['train'].add_scalar(
-                'PPO/value_loss_before_update', mean_value_loss, global_step=step
+                'Agent_PPO/value_loss_before_update', mean_value_loss, global_step=step
             )
 
         print(f"    Advantage std (raw): {std_adv_raw:.4f}")
@@ -425,7 +456,7 @@ class PolicyTrainer:
     # =====================================================================
 
     def log_curriculum_level(self, level: int, step: int):
-        self.writers['train'].add_scalar('Curriculum level', level, global_step=step)
+        self.writers['train'].add_scalar('ACL/Curriculum level', level, global_step=step)
 
     def log_metrics(self, phase: str, x_value: int, problem_info_list: List[Dict],
                    trajectories: List[List[Dict]] = None, score: Optional[float] = None) -> Dict:
@@ -483,16 +514,16 @@ class PolicyTrainer:
             log_dict['Mean steps (all)'] = mean_steps_all
             log_dict['Num successful'] = success_count
             
-            writer.add_scalar('Success rate', success_rate, global_step=x_value)
-            writer.add_scalar('Mean budget left', mean_budget_left, global_step=x_value)
-            writer.add_scalar('Mean steps (successful)', mean_steps, global_step=x_value)
-            writer.add_scalar('Mean steps (all)', mean_steps_all, global_step=x_value)
+            writer.add_scalar('Solving_Metrics/Success rate', success_rate, global_step=x_value)
+            writer.add_scalar('Solving_Metrics/Mean budget left', mean_budget_left, global_step=x_value)
+            writer.add_scalar('Solving_Metrics/Mean steps (successful)', mean_steps, global_step=x_value)
+            writer.add_scalar('Solving_Metrics/Mean steps (all)', mean_steps_all, global_step=x_value)
 
 
             if phase in ('test', 'val'):
                 self.cumulative_regret += 1.0 - success_rate
                 log_dict['Cumulative regret'] = self.cumulative_regret
-                writer.add_scalar('Cumulative regret', self.cumulative_regret, global_step=x_value)
+                writer.add_scalar('Solving_Metrics/Cumulative regret', self.cumulative_regret, global_step=x_value)
 
         # ---- Trajectory metrics (train phase) ----
         if trajectories is not None and len(trajectories) > 0:
@@ -515,23 +546,23 @@ class PolicyTrainer:
                 log_dict['Reward/min'] = min_reward
                 log_dict['Reward/max'] = max_reward
                 
-                writer.add_scalar('Mean return', mean_return, global_step=x_value)
-                writer.add_scalar('Mean advantage', mean_advantage, global_step=x_value)
-                writer.add_scalar('Reward/mean', mean_reward, global_step=x_value)
-                writer.add_scalar('Reward/std', std_reward, global_step=x_value)
-                writer.add_scalar('Reward/min', min_reward, global_step=x_value)
-                writer.add_scalar('Reward/max', max_reward, global_step=x_value)
+                writer.add_scalar('Agent/Mean return', mean_return, global_step=x_value)
+                writer.add_scalar('Agent/Mean advantage', mean_advantage, global_step=x_value)
+                writer.add_scalar('Agent/Reward/mean', mean_reward, global_step=x_value)
+                writer.add_scalar('Agent/Reward/std', std_reward, global_step=x_value)
+                writer.add_scalar('Agent/Reward/min', min_reward, global_step=x_value)
+                writer.add_scalar('Agent/Reward/max', max_reward, global_step=x_value)
 
         # ---- Validation score ----
         if score is not None:
             log_dict['Average score'] = score
-            writer.add_scalar('Average score', score, global_step=x_value)
+            writer.add_scalar('Solving_Metrics/Average score', score, global_step=x_value)
 
         # ---- GPU memory ----
         if phase == 'train' and self.device.type == 'cuda':
             mem_allocated = torch.cuda.memory_allocated(self.device) / 2**20
             log_dict['Allocated Memory (MB)'] = mem_allocated
-            writer.add_scalar('Allocated Memory (MB)', mem_allocated, global_step=x_value)
+            writer.add_scalar('Agent/Allocated Memory (MB)', mem_allocated, global_step=x_value)
 
         return log_dict
 
@@ -1016,4 +1047,73 @@ class PolicyTrainer:
 
         return step, level_beaten, False
     
+    # =====================================================================
+    # NeSIG helpers
+    # =====================================================================
 
+    @torch.no_grad()
+    def compute_per_problem_losses_pre_update(
+        self,
+        per_problem_samples: List[List[dict]],
+    ) -> List[float]:
+        """
+        Compute PPO loss (LCLIP + LVF) per problem BEFORE the weight update.
+        Uses the current policy weights on each problem's samples independently.
+
+        This is the correct difficulty signal: how hard is each problem for the
+        student *right now*, before it has learned from it.
+
+        Parameters
+        ----------
+        per_problem_samples : List[List[dict]]
+            One list of step-dicts per problem (from _process_trajectories_with_split).
+
+        Returns
+        -------
+        List[float]
+            One loss value per problem, normalised by trajectory length.
+        """
+        per_problem_losses = []
+        epsilon = self.args.solve_epsilon
+
+        for steps in per_problem_samples:
+            if not steps:
+                per_problem_losses.append(0.0)
+                continue
+
+            internal_states  = [s['internal_state']      for s in steps]
+            applicable       = [s['applicable_actions']   for s in steps]
+            chosen_inds      = [s['chosen_action_ind']    for s in steps]
+            old_log_probs    = torch.tensor(
+                [s['action_log_prob'] for s in steps], device=self.policy.device
+            )
+            old_state_values = torch.tensor(
+                [s['state_value']     for s in steps], device=self.policy.device
+            )
+            advantages       = torch.tensor(
+                [s['advantage']       for s in steps], device=self.policy.device
+            )
+
+            # ---- Critic loss (LVF) ----
+            state_values_list, _ = self.policy.calculate_state_values(internal_states)
+            new_state_values = torch.stack(state_values_list)
+            critic_target = old_state_values + advantages
+            lvf = torch.mean((new_state_values - critic_target) ** 2)
+
+            # # ---- Actor loss (LCLIP) ----
+            # log_probs_list, _ = self.policy.forward(internal_states, applicable)
+            # curr_probs = torch.exp(torch.stack([
+            #     lp[idx] for lp, idx in zip(log_probs_list, chosen_inds)
+            # ]))
+            # old_probs = torch.exp(old_log_probs)
+            # ratio = curr_probs / old_probs
+            # lclip = torch.mean(-torch.min(
+            #     ratio * advantages,
+            #     torch.clamp(ratio, 1 - epsilon, 1 + epsilon) * advantages,
+            # ))
+
+            # loss = (lclip + self.args.critic_loss_weight * lvf).item()
+            loss = lvf * 10
+            per_problem_losses.append(loss)
+
+        return per_problem_losses

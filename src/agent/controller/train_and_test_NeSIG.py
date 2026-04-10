@@ -63,7 +63,7 @@ from src.nesig import constants as nesig_constants
 nesig_constants.PLANNER_SCRIPTS_PATH = _nesig_teacher_root / 'src/nesig/libs/planner-scripts'
 
 from src.agent.teacher.student_difficulty_evaluator import (
-    LossBasedDifficultyEvaluator, StudentDifficultyEvaluator
+    StudentDifficultyEvaluator
 )
 
 # ---- Student imports ----
@@ -129,10 +129,10 @@ def parse_arguments():
                             help="Max goal actions for NeSIG problem generation")
 
     parser.add_argument('--nesig_init_lr',         type=float, default=1e-3)
-    parser.add_argument('--nesig_init_ppo_epochs', type=int,   default=5)
+    parser.add_argument('--nesig_init_ppo_epochs', type=int,   default=3)
     parser.add_argument('--nesig_init_epsilon',    type=float, default=0.2)
 
-    parser.add_argument('--nesig_goal_lr',         type=float, default=1e-2)
+    parser.add_argument('--nesig_goal_lr',         type=float, default=1e-3)
     parser.add_argument('--nesig_goal_ppo_epochs', type=int,   default=6)
     parser.add_argument('--nesig_goal_epsilon',    type=float, default=0.2)
 
@@ -162,6 +162,9 @@ def parse_arguments():
     parser.add_argument('--nesig-warmup-steps', type=int, default=30,
                             help="NeSIG-only warmup steps before co-training. Set 0 to disable.")
     parser.add_argument('--min-samples-train', type=int, default=10)
+    parser.add_argument('--k-rollouts', type=int, default=1,
+                        help="Number of rollouts per problem for difficulty estimation. "
+                             "More rollouts = lower variance difficulty signal, higher cost.")
 
 
     parser.add_argument('--batch-size', type=int, default=64)
@@ -357,6 +360,7 @@ def build_student(args, domain_parser, last_train_it, experiment_folder_path, de
 # Metrics logger for shared training
 # =====================================================================
 
+# TODO: Reciclar o desechar esta función.
 def log_nesig_student_metrics(
     student_trainer: StudentTrainer,
     consistent_problems: list,
@@ -543,9 +547,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
         student_policy.to('cuda')
 
     # ---- Build NeSIG teacher ----
-    loss_evaluator = LossBasedDifficultyEvaluator()
     student_difficulty_evaluator = StudentDifficultyEvaluator(
-        loss_evaluator=loss_evaluator,
         difficulty_penalty=args.difficulty_penalty,
     )
     nesig_args, parsed_domain_info, init_policy, goal_policy, problem_generator = \
@@ -599,13 +601,12 @@ def train(args, experiment_id, experiment_folder_path: Path):
 
             # Update NeSIG on ALL trajectories — no difficulty signal, only consistency
             with torch.no_grad():
-                init_trajectories, goal_trajectories = nesig_trainer._process_trajectories(
+                init_trajectories, _ = nesig_trainer._process_trajectories(
                     trajectories, problem_info_list,
                     train_init_policy=True,
-                    train_goal_policy=True,
+                    train_goal_policy=False,
                 )
             nesig_trainer._perform_train_step(init_policy, init_trajectories)
-            nesig_trainer._perform_train_step(goal_policy, goal_trajectories)
 
         print(f"\n  Warmup complete. Starting co-training.\n")
 
@@ -730,12 +731,6 @@ def train(args, experiment_id, experiment_folder_path: Path):
         if goal_atoms:
             print(f"    Mean goal atoms       : {sum(goal_atoms)/len(goal_atoms):.2f}")
             print(f"    Min goal atoms        : {min(goal_atoms)}")
-
-        # Difficulty signal
-        if loss_evaluator._ema_critic is not None:
-            print(f"    Difficulty EMAs       : "
-                f"critic={loss_evaluator._ema_critic:.4f}, "
-                f"ppo={loss_evaluator._ema_ppo:.4f}")
         else:
             print(f"    Difficulty EMAs       : N/A (no PPO update yet)")
 
@@ -766,21 +761,51 @@ def train(args, experiment_id, experiment_folder_path: Path):
         # ------------------------------------------------------------------
         print(f"\033[1m\033[93m[3] STUDENT SOLVES PROBLEMS\033[0m")
         
-        with torch.no_grad():
-            _, problem_info, trajectories, _ = \
-                student_trainer._solve_and_collect_trajectories(
-                    student_problems, args.max_actions_train
-                )
+        all_rollout_losses = []  # shape: [k_rollouts, num_consistent_problems]
 
-        # TODO: se podría fusionar paso 3 y 4
-        
-        samples = student_trainer._process_trajectories(trajectories, problem_info)
+        for k in range(args.k_rollouts):
+            with torch.no_grad():
+                _, problem_info_k, trajectories_k, _ = \
+                    student_trainer._solve_and_collect_trajectories(
+                        student_problems, args.max_actions_train
+                    )
+
+            samples_k, per_problem_samples_k = student_trainer._process_trajectories_with_split(
+                trajectories_k, problem_info_k
+            )
+
+            if len(samples_k) >= args.min_samples_train:
+                losses_k = student_trainer.compute_per_problem_losses_pre_update(
+                    per_problem_samples_k
+                )
+            else:
+                losses_k = [0.0] * len(consistent_trajectories)
+
+            all_rollout_losses.append(losses_k)
+
+            # Keep the last rollout's samples and problem_info for the PPO update
+            if k == args.k_rollouts - 1:
+                samples = samples_k
+                per_problem_samples = per_problem_samples_k
+                problem_info = problem_info_k
+                trajectories = trajectories_k
+
+        # Average losses across rollouts — one value per consistent problem
+        pre_update_losses = [
+            sum(all_rollout_losses[k][i] for k in range(args.k_rollouts)) / args.k_rollouts
+            for i in range(len(consistent_trajectories))
+        ]
+
+        mean_difficulty = student_difficulty_evaluator.inject_difficulty(
+            pre_update_losses, consistent_trajectories
+        )
 
         # ------------------------------------------------------------------
         # 4. Student PPO update
         # ------------------------------------------------------------------
         print(f"\033[1m\033[93m[4] STUDENT PPO UPDATE\033[0m")
-        
+
+        # PPO Update
         if len(samples) >= args.min_samples_train:
             student_trainer._perform_train_step(samples)
             student_trainer.save_policy(save_best=False)
@@ -789,8 +814,6 @@ def train(args, experiment_id, experiment_folder_path: Path):
                 student_trainer.log_metrics('train', current_step, problem_info, trajectories=trajectories)
         else:
             print(f"    Skipping PPO: {len(samples)} < {args.min_samples_train}")
-            student_trainer.policy.last_critic_loss = 0.0
-            student_trainer.policy.last_ppo_loss = 0.0
         
         student_trainer.policy.curr_logging_it = torch.tensor(current_step, dtype=torch.int32)
 
@@ -839,15 +862,6 @@ def train(args, experiment_id, experiment_folder_path: Path):
         # ------------------------------------------------------------------
         if current_step % args.teacher_update_period == 0:
             print(f"\033[1m\033[93m[5] TEACHER PPO UPDATE\033[0m")
-
-            difficulty = loss_evaluator.get_difficulty(student_trainer.policy, len(consistent_problems))
-            mean_difficulty = difficulty[0]
-            print(f"    Mean difficulty reward: {mean_difficulty:.4f}")
-
-            # Inject into the last sample of each consistent trajectory
-            for traj, diff in zip(consistent_trajectories, difficulty):
-                if traj:
-                    traj[-1]['difficulty_reward'] = diff
 
             # Then teacher PPO update uses these updated trajectories
             with torch.no_grad():
