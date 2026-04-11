@@ -129,11 +129,11 @@ def parse_arguments():
                             help="Max goal actions for NeSIG problem generation")
 
     parser.add_argument('--nesig_init_lr',         type=float, default=1e-3)
-    parser.add_argument('--nesig_init_ppo_epochs', type=int,   default=3)
+    parser.add_argument('--nesig_init_ppo_epochs', type=int,   default=6)
     parser.add_argument('--nesig_init_epsilon',    type=float, default=0.2)
 
     parser.add_argument('--nesig_goal_lr',         type=float, default=1e-3)
-    parser.add_argument('--nesig_goal_ppo_epochs', type=int,   default=6)
+    parser.add_argument('--nesig_goal_ppo_epochs', type=int,   default=8)
     parser.add_argument('--nesig_goal_epsilon',    type=float, default=0.2)
 
     parser.add_argument('--diversity-threshold', type=float, default=0.1)
@@ -168,9 +168,9 @@ def parse_arguments():
 
 
     parser.add_argument('--batch-size', type=int, default=64)
-    parser.add_argument('--grad-clip', type=float, default=0.5)
-    parser.add_argument('--disc-factor', type=float, default=0.99)
-    parser.add_argument('--gae-factor', type=float, default=0.95)
+    parser.add_argument('--grad-clip', type=float, default=5)
+    parser.add_argument('--disc-factor', type=float, default=1)
+    parser.add_argument('--gae-factor', type=float, default=1)
 
     # --- Training Set Up ---
     parser.add_argument('--seed', type=int, default=1)
@@ -681,6 +681,8 @@ def train(args, experiment_id, experiment_folder_path: Path):
                     args.max_init_actions_train,
                     args.max_goal_actions_train,
                 )
+            
+        # Metrics -------------------------------------------------------------------------------------
 
         consistent = [
             (p, info, traj)
@@ -705,6 +707,8 @@ def train(args, experiment_id, experiment_folder_path: Path):
         consistency_rate = num_consistent / num_total if num_total > 0 else 0.0
         print(f"    {num_consistent}/{num_total} consistent ({consistency_rate:.1%})")
 
+        # ---------------------------------------------------------------------------------------------
+
         if not consistent_problems:
             print("  No consistent problems generated, skipping step.")
             current_step += 1
@@ -718,7 +722,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
                 f.write(p.dump_to_pddl(f'problem_{i}'))
         replay_buffer.register_dir(str(step_problem_dir))
 
-        # Debug info
+        # Debug info --------------------------------------------------------------------------------------
         init_lengths = [info['init_phase_length'] for info in all_nesig_infos]
         print(f"    Mean init phase length: {sum(init_lengths)/len(init_lengths):.2f}")
 
@@ -799,6 +803,59 @@ def train(args, experiment_id, experiment_folder_path: Path):
         mean_difficulty = student_difficulty_evaluator.inject_difficulty(
             pre_update_losses, consistent_trajectories
         )
+
+        # Debug: per-problem difficulty rewards
+        if current_step % args.log_period == 0:
+            debug_path = experiment_folder_path / 'difficulty_debug.txt'
+            with open(debug_path, 'a') as f:
+                f.write(f"\n{'='*60}\n")
+                f.write(f"Step {current_step}\n")
+                f.write(f"{'='*60}\n")
+                for i, (loss, rollout_losses) in enumerate(
+                    zip(pre_update_losses, zip(*all_rollout_losses))
+                ):
+                    # Per-problem samples from last rollout for component losses
+                    steps = per_problem_samples[i]
+                    if steps:
+                        # Recompute component losses for display
+                        internal_states  = [s['internal_state']      for s in steps]
+                        applicable       = [s['applicable_actions']   for s in steps]
+                        chosen_inds      = [s['chosen_action_ind']    for s in steps]
+                        old_log_probs    = torch.tensor([s['action_log_prob'] for s in steps], device=student_trainer.policy.device)
+                        old_state_values = torch.tensor([s['state_value']     for s in steps], device=student_trainer.policy.device)
+                        advantages       = torch.tensor([s['advantage']       for s in steps], device=student_trainer.policy.device)
+
+                        with torch.no_grad():
+                            sv_list, _ = student_trainer.policy.calculate_state_values(internal_states)
+                            new_sv = torch.stack(sv_list)
+                            critic_target = old_state_values + advantages
+                            lvf = torch.mean((new_sv - critic_target) ** 2).item()
+
+                            lp_list, _ = student_trainer.policy.forward(internal_states, applicable)
+                            curr_probs = torch.exp(torch.stack([lp[idx] for lp, idx in zip(lp_list, chosen_inds)]))
+                            old_probs  = torch.exp(old_log_probs)
+                            ratio      = curr_probs / old_probs
+                            epsilon    = student_trainer.args.solve_epsilon
+                            lclip = torch.mean(-torch.min(
+                                ratio * advantages,
+                                torch.clamp(ratio, 1 - epsilon, 1 + epsilon) * advantages,
+                            )).item()
+
+                        traj_len = len(steps)
+                        goal_reached = problem_info[i].get('goal_reached', '?')
+                    else:
+                        lvf, lclip, traj_len, goal_reached = 0.0, 0.0, 0, True
+
+                    f.write(
+                        f"  P_{i:02d} | difficulty={loss:+.4f} | "
+                        f"lvf={lvf:.4f}  lclip={lclip:+.4f} | "
+                        f"traj_len={traj_len:>3} | "
+                        f"goal_reached={str(goal_reached):<5} | "
+                        f"goal_atoms={goal_atoms[i] if goal_atoms else '?':>3}"
+                        + (f" | rollouts: " + '  '.join(f'r{k}={v:+.4f}' for k, v in enumerate(rollout_losses)) if args.k_rollouts > 1 else '')
+                        + "\n"
+                    )
+                f.write(f"  mean_difficulty={mean_difficulty:+.4f}\n")
 
         # ------------------------------------------------------------------
         # 4. Student PPO update

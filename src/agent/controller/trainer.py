@@ -1113,7 +1113,7 @@ class PolicyTrainer:
             # ))
 
             # loss = (lclip + self.args.critic_loss_weight * lvf).item()
-            loss = lvf * 10
+            loss = lvf
             per_problem_losses.append(loss)
 
         return per_problem_losses

@@ -61,3 +61,5 @@ experiments/*
 data/problems/eval/*
 data/problems/curriculum/*
 data/problems/nesig/*
+
+slurm
