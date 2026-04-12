@@ -165,11 +165,16 @@ def parse_arguments():
     parser.add_argument('--k-rollouts', type=int, default=1,
                         help="Number of rollouts per problem for difficulty estimation. "
                              "More rollouts = lower variance difficulty signal, higher cost.")
+    parser.add_argument('--freeze-period', type=int, default=0,
+                        help="Steps each agent trains before switching. "
+                            "0 = fully interleaved, both update every step (default). "
+                            "1 = strict alternation N, S, N, S... "
+                            "10 = N×10, S×10, N×10...")
 
 
     parser.add_argument('--batch-size', type=int, default=64)
-    parser.add_argument('--grad-clip', type=float, default=5)
-    parser.add_argument('--disc-factor', type=float, default=1)
+    parser.add_argument('--grad-clip', type=float, default=0.5)
+    parser.add_argument('--disc-factor', type=float, default=0.99)
     parser.add_argument('--gae-factor', type=float, default=1)
 
     # --- Training Set Up ---
@@ -264,7 +269,7 @@ def build_nesig_components(args, device, difficulty_evaluator=None):
         num_problems_test=args.num_problems_test,
         min_samples_train=args.min_samples_train,
         critic_loss_weight=args.critic_loss_weight,
-        grad_clip=args.grad_clip,
+        grad_clip=5.0,
         batch_size=args.batch_size,
         disc_factor=1.0,
         gae_factor=1.0,
@@ -669,6 +674,16 @@ def train(args, experiment_id, experiment_folder_path: Path):
     while current_step <= args.steps:
         print(f"\033[1m\033[94mStep {current_step}/{args.steps}\033[0m")
 
+        # Determine which agent is active this step
+        if args.freeze_period == 0:
+            # Current behavior: both update every step
+            train_nesig   = True
+            train_student = True
+        else:
+            freeze_cycle  = ((current_step - 1) // args.freeze_period) % 2
+            train_nesig   = (freeze_cycle == 0)
+            train_student = (freeze_cycle == 1)
+
         # ------------------------------------------------------------------
         # 1. Teacher generates one batch of problems
         # ------------------------------------------------------------------
@@ -863,12 +878,14 @@ def train(args, experiment_id, experiment_folder_path: Path):
         print(f"\033[1m\033[93m[4] STUDENT PPO UPDATE\033[0m")
 
         # PPO Update
-        if len(samples) >= args.min_samples_train:
+        if train_student and len(samples) >= args.min_samples_train:
             student_trainer._perform_train_step(samples)
             student_trainer.save_policy(save_best=False)
 
             if current_step % student_trainer.args.log_period == 0:
                 student_trainer.log_metrics('train', current_step, problem_info, trajectories=trajectories)
+        elif not train_student:
+            print(f"    Teacher frozen this cycle (step {current_step})")
         else:
             print(f"    Skipping PPO: {len(samples)} < {args.min_samples_train}")
         
@@ -917,7 +934,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
         # ------------------------------------------------------------------
         # 5. Teacher PPO update (every teacher_update_period steps)
         # ------------------------------------------------------------------
-        if current_step % args.teacher_update_period == 0:
+        if train_nesig:
             print(f"\033[1m\033[93m[5] TEACHER PPO UPDATE\033[0m")
 
             # Then teacher PPO update uses these updated trajectories
@@ -929,6 +946,8 @@ def train(args, experiment_id, experiment_folder_path: Path):
                 )
             nesig_trainer._perform_train_step(init_policy, init_trajectories)
             nesig_trainer._perform_train_step(goal_policy, goal_trajectories)
+        else:
+            print(f"    Teacher frozen this cycle (step {current_step})")
           
         # Logging  
         if current_step % args.log_period == 0:
