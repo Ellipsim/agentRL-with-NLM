@@ -950,7 +950,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
             print(f"    Teacher frozen this cycle (step {current_step})")
           
         # Logging  
-        if current_step % args.log_period == 0:
+        if current_step % args.log_period == 0 and train_nesig:
             nesig_trainer.log_metrics(
                 'train', current_step,
                 problems, all_nesig_infos,
