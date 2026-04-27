@@ -128,13 +128,13 @@ def parse_arguments():
     parser.add_argument('--max-goal-actions-train', type=int, default=10,
                             help="Max goal actions for NeSIG problem generation")
 
-    parser.add_argument('--nesig_init_lr',         type=float, default=1e-3)
-    parser.add_argument('--nesig_init_ppo_epochs', type=int,   default=6)
-    parser.add_argument('--nesig_init_epsilon',    type=float, default=0.2)
+    parser.add_argument('--nesig-init-lr',         type=float, default=1e-3)
+    parser.add_argument('--nesig-init-ppo-epochs', type=int,   default=6)
+    parser.add_argument('--nesig-init-epsilon',    type=float, default=0.2)
 
-    parser.add_argument('--nesig_goal_lr',         type=float, default=1e-3)
-    parser.add_argument('--nesig_goal_ppo_epochs', type=int,   default=8)
-    parser.add_argument('--nesig_goal_epsilon',    type=float, default=0.2)
+    parser.add_argument('--nesig-goal-lr',         type=float, default=1e-3)
+    parser.add_argument('--nesig-goal-ppo-epochs', type=int,   default=8)
+    parser.add_argument('--nesig-goal-epsilon',    type=float, default=0.2)
 
     parser.add_argument('--diversity-threshold', type=float, default=0.1)
     parser.add_argument('--perc-problems-diversity', type=float, default=1.0)
@@ -735,7 +735,6 @@ def train(args, experiment_id, experiment_folder_path: Path):
         for i, p in enumerate(consistent_problems):
             with open(step_problem_dir / f'problem_{i}.pddl', 'w') as f:
                 f.write(p.dump_to_pddl(f'problem_{i}'))
-        replay_buffer.register_dir(str(step_problem_dir))
 
         # Debug info --------------------------------------------------------------------------------------
         init_lengths = [info['init_phase_length'] for info in all_nesig_infos]
@@ -771,8 +770,8 @@ def train(args, experiment_id, experiment_folder_path: Path):
             str(step_problem_dir), args.domain_path,
             len(consistent_problems),
             max_actions=args.max_actions_train,
-            # replay_buffer=replay_buffer,
-            # replay_extra=args.replay_extra,
+            replay_buffer=replay_buffer,
+            replay_extra=args.replay_extra,
         )
 
         # ------------------------------------------------------------------
@@ -809,10 +808,12 @@ def train(args, experiment_id, experiment_folder_path: Path):
                 problem_info = problem_info_k
                 trajectories = trajectories_k
 
+        n_fresh = len(consistent_problems)
+
         # Average losses across rollouts — one value per consistent problem
         pre_update_losses = [
             sum(all_rollout_losses[k][i] for k in range(args.k_rollouts)) / args.k_rollouts
-            for i in range(len(consistent_trajectories))
+            for i in range(n_fresh)
         ]
 
         mean_difficulty = student_difficulty_evaluator.inject_difficulty(
@@ -827,7 +828,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
                 f.write(f"Step {current_step}\n")
                 f.write(f"{'='*60}\n")
                 for i, (loss, rollout_losses) in enumerate(
-                    zip(pre_update_losses, zip(*all_rollout_losses))
+                    zip(pre_update_losses, zip(*[r[:n_fresh] for r in all_rollout_losses]))
                 ):
                     # Per-problem samples from last rollout for component losses
                     steps = per_problem_samples[i]
@@ -919,14 +920,15 @@ def train(args, experiment_id, experiment_folder_path: Path):
             
 
             # Trivial problems
-            already_solved = sum(1 for info in problem_info if info.get('num_steps', 1) == 0)
-            trivial_rate = already_solved / len(problem_info) if problem_info else 0.0
+            fresh_problem_info = problem_info[:n_fresh]
+            already_solved = sum(1 for info in fresh_problem_info if info.get('num_steps', 1) == 0)
+            trivial_rate = already_solved / len(fresh_problem_info) if fresh_problem_info else 0.0
             writer.add_scalar('NeSIG/trivial_problem_rate', trivial_rate, global_step=current_step)
 
             # Print summary
             print(f"  \033[1m\033[96m[METRICS]\033[0m")
             print(f"    Consistency     : {consistency_rate:.1%} ({num_consistent}/{num_total})")
-            print(f"    Trivial problems: {already_solved}/{len(problem_info)} ({trivial_rate:.1%})")
+            print(f"    Trivial problems: {already_solved}/{len(fresh_problem_info)} ({trivial_rate:.1%})")
             print(f"    Diversity reward: {mean_diversity:.4f}")
             print(f"    Difficulty reward: {mean_difficulty:.4f}")
 

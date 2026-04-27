@@ -1100,20 +1100,20 @@ class PolicyTrainer:
             critic_target = old_state_values + advantages
             lvf = torch.mean((new_state_values - critic_target) ** 2)
 
-            # # ---- Actor loss (LCLIP) ----
-            # log_probs_list, _ = self.policy.forward(internal_states, applicable)
-            # curr_probs = torch.exp(torch.stack([
-            #     lp[idx] for lp, idx in zip(log_probs_list, chosen_inds)
-            # ]))
-            # old_probs = torch.exp(old_log_probs)
-            # ratio = curr_probs / old_probs
-            # lclip = torch.mean(-torch.min(
-            #     ratio * advantages,
-            #     torch.clamp(ratio, 1 - epsilon, 1 + epsilon) * advantages,
-            # ))
+            lclip = 0
+            # ---- Actor loss (LCLIP) ----
+            log_probs_list, _ = self.policy.forward(internal_states, applicable)
+            curr_probs = torch.exp(torch.stack([
+                lp[idx] for lp, idx in zip(log_probs_list, chosen_inds)
+            ]))
+            old_probs = torch.exp(old_log_probs)
+            ratio = curr_probs / old_probs
+            lclip = torch.mean(torch.min(
+                ratio * advantages,
+                torch.clamp(ratio, 1 - epsilon, 1 + epsilon) * advantages,
+            ))
 
-            # loss = (lclip + self.args.critic_loss_weight * lvf).item()
-            loss = lvf # NOTE: 0, 10, 50
-            per_problem_losses.append(loss)
+            loss = (lclip.abs() + lvf)
+            per_problem_losses.append(loss.item())
 
         return per_problem_losses
