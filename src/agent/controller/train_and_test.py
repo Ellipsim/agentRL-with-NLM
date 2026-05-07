@@ -192,6 +192,21 @@ def parse_arguments():
         help="Penalty for each step"
     )
 
+    # Problem generation
+    parser.add_argument('--gen-period', type=int, default=5,
+        help="Iterations before regenerating training problems")
+
+    parser.add_argument('--gen-batch-size', type=int, default=30,
+        help="Number of problems to generate each cycle")
+    
+    # Añadir en parse_arguments(), junto a --gen-period y --gen-batch-size:
+    parser.add_argument('--generator-path', type=str, required=True,
+        help="Path to the problem generator binary")
+    parser.add_argument('--min-blocks', type=int, default=2,
+        help="Min blocks for generated problems")
+    parser.add_argument('--max-blocks', type=int, default=30,
+        help="Max blocks for generated problems")
+
     # ---- NLM Model Specific Arguments ----
     # Register all NLM-specific arguments (breadth, depth, hidden-features, etc.)
     NLMWrapperActor.add_model_specific_args(parser)
@@ -314,6 +329,29 @@ def load_problems_from_dir(problem_dir, domain_path, num_problems, max_actions=N
     
     return problems
 
+def generate_problems(generator_path: str, out_dir: str,
+                      count: int, min_blocks: int, max_blocks: int,
+                      seed_start: int = 0) -> None:
+    import subprocess
+    import random
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    for f in out_path.glob("*.pddl"):
+        f.unlink()
+
+    for i in range(count):
+        blocks = random.randint(min_blocks, max_blocks)
+        seed = seed_start + i
+        out_file = out_path / f"problem_{i + 1}.pddl"
+        result = subprocess.run(
+            [generator_path, '4', str(blocks), str(seed)],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Generator failed for problem {i + 1}: {result.stderr}")
+        out_file.write_text(result.stdout)
+
 
 # =====================================================================
 # Policy Creation
@@ -429,14 +467,31 @@ def train(args, parser, experiment_id, experiment_folder_path):
     # Create trainer
     trainer = PolicyTrainer(args, experiment_folder_path, problem_solver, policy, device)
     
-    # Define problem loading functions
+    # --- Problem generation via closure ---
+    _current_batch: List[PDDLProblem] = []
+    _call_count = [0]
+
     def get_train_problems():
-        return load_problems_from_dir(
-            args.train_problems_dir, 
-            args.domain_path, 
-            args.num_problems_train,
-            max_actions=args.max_actions_train
-        )
+        if _call_count[0] % args.gen_period == 0:
+            print(f"\n  [GEN] Generating new problem batch (call={_call_count[0]}, "
+                  f"size={args.gen_batch_size}, blocks={args.min_blocks}-{args.max_blocks})...")
+            generate_problems(
+                args.generator_path,
+                args.train_problems_dir,
+                args.gen_batch_size,
+                args.min_blocks,
+                args.max_blocks,
+                seed_start=_call_count[0] * 1000,
+            )
+            _current_batch[:] = load_problems_from_dir(
+                args.train_problems_dir,
+                args.domain_path,
+                args.gen_batch_size,
+                max_actions=args.max_actions_train,
+            )
+            print(f"  [GEN] Batch ready: {len(_current_batch)} problems")
+        _call_count[0] += 1
+        return [_current_batch[i % len(_current_batch)] for i in range(args.num_problems_train)]
     
     test_problems = load_problems_from_dir(
         args.test_problems_dir, args.domain_path,

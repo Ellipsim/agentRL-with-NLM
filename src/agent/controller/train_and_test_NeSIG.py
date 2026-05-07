@@ -78,12 +78,14 @@ from src.agent.learning.model_wrapper import (
     NLMWrapperCritic as StudentNLMWrapperCritic,
 )
 from src.agent.pddl.problem_solver import ProblemSolver
+from src.agent.pddl.pddl_problem import PDDLProblem
 from src.agent.pddl.pddl_state import PDDLState as StudentPDDLState
 from src.agent.controller.trainer import PolicyTrainer as StudentTrainer, ReplayBuffer, REPLAY_BUFFER_FILENAME
 
+
 # TODO: Copiar todas estas funciones
 from src.agent.controller.train_and_test_ACG import (
-    load_problems_from_dir, generate_problems, get_level_blocks,
+    generate_problems, get_level_blocks,
     save_experiment_info, read_last_train_it, create_policy,
     save_level_checkpoint,
 )
@@ -187,6 +189,9 @@ def parse_arguments():
                     help="Number of extra problems to add from replay buffer "
                          "on top of the NeSIG generated ones. Set 0 to disable.")
     parser.add_argument('--replay-buffer-size', type=int, default=3000)
+    parser.add_argument('--replay-difficulty-low',  type=float, default=0.05,
+                    help="Min pre-update loss to add a problem to the replay buffer. "
+                         "Below this the student already solves it reliably.")
 
     # ---- Logging ----
     parser.add_argument('--log-period', type=int, default=1)
@@ -239,6 +244,62 @@ def get_experiment_id(args):
     included = {k: v for k, v in vars(args).items() if k not in EXCLUDED_ARGS_ID}
     return hashlib.sha256(str(included).encode()).hexdigest()[:ID_LENGTH]
 
+# Load problems
+def load_problems_from_dir(
+    problem_dir,
+    domain_path,
+    num_problems,
+    max_actions=None,
+    replay_buffer: Optional[ReplayBuffer] = None,
+    replay_extra: int = 0,
+) -> List[PDDLProblem]:
+    import random
+    problem_dir = Path(problem_dir)
+    problem_files = sorted(problem_dir.glob("*.pddl"))
+    if not problem_files:
+        raise FileNotFoundError(f"No .pddl files in {problem_dir}")
+
+    if num_problems > len(problem_files):
+        print(f"  Warning: requested {num_problems} problems but only "
+              f"{len(problem_files)} available in {problem_dir}. "
+              f"Problems will be cycled.")
+
+    problems = []
+
+    # Load curriculum problems
+    for i in range(num_problems):
+        path = str(problem_files[i % len(problem_files)])
+        fresh_parser = Parser()
+        fresh_parser.parse_domain(str(domain_path))
+        problem = PDDLProblem.load_from_pddl(fresh_parser, path)
+        if problem is not None:
+            if max_actions is not None:
+                problem.max_actions = (
+                    max_actions[i % len(max_actions)]
+                    if isinstance(max_actions, tuple)
+                    else max_actions
+                )
+            problems.append(problem)
+
+    # Add extra problems from replay buffer on top
+    if replay_extra > 0 and replay_buffer is not None and len(replay_buffer) > 0:
+        for _ in range(replay_extra):
+            path = replay_buffer.sample()
+            fresh_parser = Parser()
+            fresh_parser.parse_domain(str(domain_path))
+            problem = PDDLProblem.load_from_pddl(fresh_parser, path)
+            if problem is not None:
+                if max_actions is not None:
+                    problem.max_actions = (
+                        max_actions[0]
+                        if isinstance(max_actions, tuple)
+                        else max_actions
+                    )
+                problems.append(problem)
+
+    # ← register_dir call removed
+
+    return problems
 
 # =====================================================================
 # NeSIG Setup
@@ -886,11 +947,21 @@ def train(args, experiment_id, experiment_folder_path: Path):
             if current_step % student_trainer.args.log_period == 0:
                 student_trainer.log_metrics('train', current_step, problem_info, trajectories=trajectories)
         elif not train_student:
-            print(f"    Teacher frozen this cycle (step {current_step})")
+            print(f"    Student frozen this cycle (step {current_step})")
         else:
             print(f"    Skipping PPO: {len(samples)} < {args.min_samples_train}")
         
         student_trainer.policy.curr_logging_it = torch.tensor(current_step, dtype=torch.int32)
+        
+        # ---- Populate replay buffer (selective, loss-based) ----
+        added_to_replay = 0
+        for i in range(n_fresh):
+            if pre_update_losses[i] > args.replay_difficulty_low:
+                problem_path = str(step_problem_dir / f'problem_{i}.pddl')
+                replay_buffer.add(problem_path)
+                added_to_replay += 1
+        print(f"    Replay buffer: added {added_to_replay}/{n_fresh} problems "
+            f"(loss > {args.replay_difficulty_low:.2f})")
 
         # Test evaluation
         if args.test_period != -1 and current_step % args.test_period == 0:
