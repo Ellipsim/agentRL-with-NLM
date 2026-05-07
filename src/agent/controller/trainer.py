@@ -1051,17 +1051,15 @@ class PolicyTrainer:
     # NeSIG helpers
     # =====================================================================
 
-    @torch.no_grad()
     def compute_per_problem_losses_pre_update(
         self,
         per_problem_samples: List[List[dict]],
     ) -> List[float]:
         """
-        Compute PPO loss (LCLIP + LVF) per problem BEFORE the weight update.
-        Uses the current policy weights on each problem's samples independently.
-
-        This is the correct difficulty signal: how hard is each problem for the
-        student *right now*, before it has learned from it.
+        Compute difficulty signal per problem BEFORE the weight update.
+        Uses mean squared advantage as a proxy for problem difficulty:
+        problems with large/high-variance advantages are harder for the
+        current policy.
 
         Parameters
         ----------
@@ -1071,49 +1069,23 @@ class PolicyTrainer:
         Returns
         -------
         List[float]
-            One loss value per problem, normalised by trajectory length.
+            One loss value per problem.
         """
         per_problem_losses = []
-        epsilon = self.args.solve_epsilon
 
         for steps in per_problem_samples:
             if not steps:
                 per_problem_losses.append(0.0)
                 continue
 
-            internal_states  = [s['internal_state']      for s in steps]
-            applicable       = [s['applicable_actions']   for s in steps]
-            chosen_inds      = [s['chosen_action_ind']    for s in steps]
-            old_log_probs    = torch.tensor(
-                [s['action_log_prob'] for s in steps], device=self.policy.device
+            advantages = torch.tensor(
+                [float(s['advantage'].detach()) if isinstance(s['advantage'], torch.Tensor) 
+                else float(s['advantage']) for s in steps], 
+                device=self.policy.device
             )
-            old_state_values = torch.tensor(
-                [s['state_value']     for s in steps], device=self.policy.device
-            )
-            advantages       = torch.tensor(
-                [s['advantage']       for s in steps], device=self.policy.device
-            )
+        
 
-            # ---- Critic loss (LVF) ----
-            state_values_list, _ = self.policy.calculate_state_values(internal_states)
-            new_state_values = torch.stack(state_values_list)
-            critic_target = old_state_values + advantages
-            lvf = torch.mean((new_state_values - critic_target) ** 2)
-
-            lclip = 0
-            # ---- Actor loss (LCLIP) ----
-            log_probs_list, _ = self.policy.forward(internal_states, applicable)
-            curr_probs = torch.exp(torch.stack([
-                lp[idx] for lp, idx in zip(log_probs_list, chosen_inds)
-            ]))
-            old_probs = torch.exp(old_log_probs)
-            ratio = curr_probs / old_probs
-            lclip = torch.mean(torch.min(
-                ratio * advantages,
-                torch.clamp(ratio, 1 - epsilon, 1 + epsilon) * advantages,
-            ))
-
-            loss = (lclip.abs() + lvf)
-            per_problem_losses.append(loss.item())
+            loss = torch.mean(advantages ** 2).item()
+            per_problem_losses.append(loss)
 
         return per_problem_losses

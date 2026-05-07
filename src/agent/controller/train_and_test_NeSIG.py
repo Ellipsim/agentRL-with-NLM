@@ -898,9 +898,9 @@ def train(args, experiment_id, experiment_folder_path: Path):
                         internal_states  = [s['internal_state']      for s in steps]
                         applicable       = [s['applicable_actions']   for s in steps]
                         chosen_inds      = [s['chosen_action_ind']    for s in steps]
-                        old_log_probs    = torch.tensor([s['action_log_prob'] for s in steps], device=student_trainer.policy.device)
-                        old_state_values = torch.tensor([s['state_value']     for s in steps], device=student_trainer.policy.device)
-                        advantages       = torch.tensor([s['advantage']       for s in steps], device=student_trainer.policy.device)
+                        old_log_probs    = torch.tensor([s['action_log_prob'].detach().item() if isinstance(s['action_log_prob'], torch.Tensor) else float(s['action_log_prob']) for s in steps], device=student_trainer.policy.device)
+                        old_state_values = torch.tensor([s['state_value'].detach().item()     if isinstance(s['state_value'],     torch.Tensor) else float(s['state_value'])     for s in steps], device=student_trainer.policy.device)
+                        advantages       = torch.tensor([s['advantage'].detach().item()       if isinstance(s['advantage'],       torch.Tensor) else float(s['advantage'])       for s in steps], device=student_trainer.policy.device)
 
                         with torch.no_grad():
                             sv_list, _ = student_trainer.policy.calculate_state_values(internal_states)
