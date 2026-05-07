@@ -402,7 +402,8 @@ def build_nesig_components(args, device, difficulty_evaluator=None):
         init_policy.to('cuda')
         goal_policy.to('cuda')
 
-    return nesig_args, parsed_domain_info, init_policy, goal_policy, problem_generator
+    return nesig_args, parsed_domain_info, init_policy, goal_policy, problem_generator, diversity_evaluator
+
 
 
 # =====================================================================
@@ -616,7 +617,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
     student_difficulty_evaluator = StudentDifficultyEvaluator(
         difficulty_penalty=args.difficulty_penalty,
     )
-    nesig_args, parsed_domain_info, init_policy, goal_policy, problem_generator = \
+    nesig_args, parsed_domain_info, init_policy, goal_policy, problem_generator, diversity_evaluator = \
         build_nesig_components(args, device, difficulty_evaluator=student_difficulty_evaluator)
 
     # Move NeSIG policies to device
@@ -770,14 +771,6 @@ def train(args, experiment_id, experiment_folder_path: Path):
         consistent_infos        = [info for _, info, _ in consistent]
         consistent_trajectories = [traj for _, _, traj in consistent]
 
-        diversity_rewards = [
-            traj[-1]['diversity_reward']
-            for traj in all_nesig_trajectories
-            if traj  # guard against empty trajectory
-        ]
-        mean_diversity = sum(diversity_rewards) / len(diversity_rewards) if diversity_rewards else 0.0
-        print(f"    Mean diversity reward : {mean_diversity:.4f}")
-
         num_consistent = len(consistent_problems)
         num_total = len(problems)
         consistency_rate = num_consistent / num_total if num_total > 0 else 0.0
@@ -797,34 +790,10 @@ def train(args, experiment_id, experiment_folder_path: Path):
             with open(step_problem_dir / f'problem_{i}.pddl', 'w') as f:
                 f.write(p.dump_to_pddl(f'problem_{i}'))
 
-        # Debug info --------------------------------------------------------------------------------------
-        init_lengths = [info['init_phase_length'] for info in all_nesig_infos]
-        print(f"    Mean init phase length: {sum(init_lengths)/len(init_lengths):.2f}")
-
-        goal_lengths = [info['goal_phase_length'] for info in all_nesig_infos]
-        print(f"    Mean goal phase length: {sum(goal_lengths)/len(goal_lengths):.2f}")
-        print(f"    Min goal phase length : {min(goal_lengths)}")
-
-        # Goal atom stats — key for diagnosing trivial problems
-        goal_atoms = [sum(info['num_atoms_goal_state'].values()) for info in consistent_infos]
-        if goal_atoms:
-            print(f"    Mean goal atoms       : {sum(goal_atoms)/len(goal_atoms):.2f}")
-            print(f"    Min goal atoms        : {min(goal_atoms)}")
-        else:
-            print(f"    Difficulty EMAs       : N/A (no PPO update yet)")
-
         # ------------------------------------------------------------------
         # 2. Student loads problems
         # ------------------------------------------------------------------
         print(f"\033[1m\033[93m[2] STUDENT LOADS PROBLEMS\033[0m")
-
-        # TODO: Check side-effects
-        # NeSIG problems without replay — for clean difficulty signal
-        # nesig_only_problems = load_problems_from_dir(
-        #     str(step_problem_dir), args.domain_path,
-        #     len(consistent_problems),
-        #     max_actions=args.max_actions_train,
-        # )
 
         # Student problems with extra replay problems added on top
         student_problems = load_problems_from_dir(
@@ -928,7 +897,6 @@ def train(args, experiment_id, experiment_folder_path: Path):
                         f"lvf={lvf:.4f}  lclip={lclip:+.4f} | "
                         f"traj_len={traj_len:>3} | "
                         f"goal_reached={str(goal_reached):<5} | "
-                        f"goal_atoms={goal_atoms[i] if goal_atoms else '?':>3}"
                         + (f" | rollouts: " + '  '.join(f'r{k}={v:+.4f}' for k, v in enumerate(rollout_losses)) if args.k_rollouts > 1 else '')
                         + "\n"
                     )
@@ -974,6 +942,34 @@ def train(args, experiment_id, experiment_folder_path: Path):
             print(f"  success={test_metrics['Success rate']:.1%}  "
                   f"budget left={test_metrics['Mean budget left']:.3f}  "
                   f"solved={int(test_metrics['Num successful'])}/{len(test_problems)}")
+
+        # Recompute diversity excluding trivial problems
+        non_trivial_mask = [
+            'num_steps' in info and info['num_steps'] > 0
+            for info in problem_info[:n_fresh]
+        ]
+        non_trivial_problems   = [p for p, keep in zip(consistent_problems,     non_trivial_mask) if keep]
+        non_trivial_trajectories = [t for t, keep in zip(consistent_trajectories, non_trivial_mask) if keep]
+
+        if len(non_trivial_problems) > 1:
+            _, new_diversity_rewards, _ = diversity_evaluator.get_diversity(non_trivial_problems)
+            for traj, reward in zip(non_trivial_trajectories, new_diversity_rewards):
+                if traj:
+                    traj[-1]['diversity_reward'] = reward
+        else:
+            # Not enough non-trivial problems to compute meaningful diversity
+            for traj in non_trivial_trajectories:
+                if traj:
+                    traj[-1]['diversity_reward'] = 0.0
+
+        # Zero out trivial problems
+        for info, traj in zip(problem_info[:n_fresh], consistent_trajectories):
+            if 'num_steps' not in info or info['num_steps'] == 0:
+                if traj:
+                    traj[-1]['diversity_reward'] = 0.0
+
+        diversity_rewards = [traj[-1]['diversity_reward'] for traj in consistent_trajectories if traj]
+        mean_diversity = sum(diversity_rewards) / len(diversity_rewards) if diversity_rewards else 0.0  
         
         # Difficulty & Consistency logging
         if current_step % args.log_period == 0:
