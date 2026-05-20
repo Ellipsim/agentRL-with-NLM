@@ -167,11 +167,12 @@ def parse_arguments():
     parser.add_argument('--k-rollouts', type=int, default=1,
                         help="Number of rollouts per problem for difficulty estimation. "
                              "More rollouts = lower variance difficulty signal, higher cost.")
-    parser.add_argument('--freeze-period', type=int, default=0,
-                        help="Steps each agent trains before switching. "
-                            "0 = fully interleaved, both update every step (default). "
-                            "1 = strict alternation N, S, N, S... "
-                            "10 = N×10, S×10, N×10...")
+    parser.add_argument('--teacher-freeze-period', type=int, default=0,
+                        help="Iterations the teacher trains before switching to student. "
+                            "0 = both update every step (default).")
+    parser.add_argument('--student-freeze-period', type=int, default=0,
+                        help="Iterations the student trains before switching to teacher. "
+                            "0 = both update every step (default).")
 
 
     parser.add_argument('--batch-size', type=int, default=64)
@@ -737,14 +738,17 @@ def train(args, experiment_id, experiment_folder_path: Path):
         print(f"\033[1m\033[94mStep {current_step}/{args.steps}\033[0m")
 
         # Determine which agent is active this step
-        if args.freeze_period == 0:
-            # Current behavior: both update every step
+        if args.teacher_freeze_period == 0 and args.student_freeze_period == 0:
+            # Default: both update every step
             train_nesig   = True
             train_student = True
         else:
-            freeze_cycle  = ((current_step - 1) // args.freeze_period) % 2
-            train_nesig   = (freeze_cycle == 0)
-            train_student = (freeze_cycle == 1)
+            t = args.teacher_freeze_period if args.teacher_freeze_period > 0 else 1
+            s = args.student_freeze_period if args.student_freeze_period > 0 else 1
+            cycle_len = t + s
+            pos = (current_step - 1) % cycle_len
+            train_nesig   = (pos < t)
+            train_student = (pos >= t)
 
         # ------------------------------------------------------------------
         # 1. Teacher generates one batch of problems
@@ -823,8 +827,13 @@ def train(args, experiment_id, experiment_folder_path: Path):
             )
 
             if len(samples_k) >= args.min_samples_train:
-                losses_k = student_trainer.compute_per_problem_losses_pre_update(
-                    per_problem_samples_k
+                # losses_k = student_trainer.compute_per_problem_losses_pre_update(
+                #     per_problem_samples_k
+                # )
+                losses_k = student_trainer.compute_per_problem_losses_step_based(
+                    per_problem_samples_k,
+                    problem_info_k,
+                    failed_penalty=1.0,   
                 )
             else:
                 losses_k = [0.0] * len(consistent_trajectories)
@@ -846,61 +855,14 @@ def train(args, experiment_id, experiment_folder_path: Path):
             for i in range(n_fresh)
         ]
 
+        print(f"    pre_update_losses (first 5): {pre_update_losses[:5]}")
+        print(f"    mean before inject: {sum(pre_update_losses)/len(pre_update_losses):.4f}")
+
         mean_difficulty = student_difficulty_evaluator.inject_difficulty(
             pre_update_losses, consistent_trajectories
         )
 
-        # Debug: per-problem difficulty rewards
-        if current_step % args.log_period == 0:
-            debug_path = experiment_folder_path / 'difficulty_debug.txt'
-            with open(debug_path, 'a') as f:
-                f.write(f"\n{'='*60}\n")
-                f.write(f"Step {current_step}\n")
-                f.write(f"{'='*60}\n")
-                for i, (loss, rollout_losses) in enumerate(
-                    zip(pre_update_losses, zip(*[r[:n_fresh] for r in all_rollout_losses]))
-                ):
-                    # Per-problem samples from last rollout for component losses
-                    steps = per_problem_samples[i]
-                    if steps:
-                        # Recompute component losses for display
-                        internal_states  = [s['internal_state']      for s in steps]
-                        applicable       = [s['applicable_actions']   for s in steps]
-                        chosen_inds      = [s['chosen_action_ind']    for s in steps]
-                        old_log_probs    = torch.tensor([s['action_log_prob'].detach().item() if isinstance(s['action_log_prob'], torch.Tensor) else float(s['action_log_prob']) for s in steps], device=student_trainer.policy.device)
-                        old_state_values = torch.tensor([s['state_value'].detach().item()     if isinstance(s['state_value'],     torch.Tensor) else float(s['state_value'])     for s in steps], device=student_trainer.policy.device)
-                        advantages       = torch.tensor([s['advantage'].detach().item()       if isinstance(s['advantage'],       torch.Tensor) else float(s['advantage'])       for s in steps], device=student_trainer.policy.device)
-
-                        with torch.no_grad():
-                            sv_list, _ = student_trainer.policy.calculate_state_values(internal_states)
-                            new_sv = torch.stack(sv_list)
-                            critic_target = old_state_values + advantages
-                            lvf = torch.mean((new_sv - critic_target) ** 2).item()
-
-                            lp_list, _ = student_trainer.policy.forward(internal_states, applicable)
-                            curr_probs = torch.exp(torch.stack([lp[idx] for lp, idx in zip(lp_list, chosen_inds)]))
-                            old_probs  = torch.exp(old_log_probs)
-                            ratio      = curr_probs / old_probs
-                            epsilon    = student_trainer.args.solve_epsilon
-                            lclip = torch.mean(-torch.min(
-                                ratio * advantages,
-                                torch.clamp(ratio, 1 - epsilon, 1 + epsilon) * advantages,
-                            )).item()
-
-                        traj_len = len(steps)
-                        goal_reached = problem_info[i].get('goal_reached', '?')
-                    else:
-                        lvf, lclip, traj_len, goal_reached = 0.0, 0.0, 0, True
-
-                    f.write(
-                        f"  P_{i:02d} | difficulty={loss:+.4f} | "
-                        f"lvf={lvf:.4f}  lclip={lclip:+.4f} | "
-                        f"traj_len={traj_len:>3} | "
-                        f"goal_reached={str(goal_reached):<5} | "
-                        + (f" | rollouts: " + '  '.join(f'r{k}={v:+.4f}' for k, v in enumerate(rollout_losses)) if args.k_rollouts > 1 else '')
-                        + "\n"
-                    )
-                f.write(f"  mean_difficulty={mean_difficulty:+.4f}\n")
+        print(f"    mean_difficulty returned: {mean_difficulty:.4f}")
 
         # ------------------------------------------------------------------
         # 4. Student PPO update
@@ -943,7 +905,7 @@ def train(args, experiment_id, experiment_folder_path: Path):
                   f"budget left={test_metrics['Mean budget left']:.3f}  "
                   f"solved={int(test_metrics['Num successful'])}/{len(test_problems)}")
 
-        # Recompute diversity excluding trivial problems
+        # Recompute diversity excluding trivial problems -----------------------------------------------------
         non_trivial_mask = [
             'num_steps' in info and info['num_steps'] > 0
             for info in problem_info[:n_fresh]
@@ -968,8 +930,10 @@ def train(args, experiment_id, experiment_folder_path: Path):
                 if traj:
                     traj[-1]['diversity_reward'] = 0.0
 
-        diversity_rewards = [traj[-1]['diversity_reward'] for traj in consistent_trajectories if traj]
+        diversity_rewards = [traj[-1]['diversity_reward'] for traj in non_trivial_trajectories if traj]
         mean_diversity = sum(diversity_rewards) / len(diversity_rewards) if diversity_rewards else 0.0  
+
+        # ---------------------------------------------------------------------------------------------------
         
         # Difficulty & Consistency logging
         if current_step % args.log_period == 0:
@@ -981,9 +945,6 @@ def train(args, experiment_id, experiment_folder_path: Path):
 
             # Diversity
             writer.add_scalar('NeSIG/mean_diversity_reward', mean_diversity, global_step=current_step)
-
-            # Difficulty 
-            writer.add_scalar('NeSIG/mean_difficulty_reward', mean_difficulty, global_step=current_step)
             
 
             # Trivial problems
@@ -992,11 +953,26 @@ def train(args, experiment_id, experiment_folder_path: Path):
             trivial_rate = already_solved / len(fresh_problem_info) if fresh_problem_info else 0.0
             writer.add_scalar('NeSIG/trivial_problem_rate', trivial_rate, global_step=current_step)
 
+            # Difficulty 
+            non_trivial_losses = [
+                loss for loss, info in zip(pre_update_losses, fresh_problem_info)
+                if info.get('num_steps', 1) > 0
+            ]
+            mean_difficulty_non_trivial = (
+                sum(non_trivial_losses) / len(non_trivial_losses)
+                if non_trivial_losses else 0.0
+            )
+
+            writer.add_scalar('NeSIG/mean_difficulty_reward', mean_difficulty_non_trivial, global_step=current_step)
+            writer.add_scalar('NeSIG/mean_difficulty_reward_all', mean_difficulty, global_step=current_step)
+            print(f"    Difficulty reward (non-trivial): {mean_difficulty_non_trivial:.4f} "
+                f"({len(non_trivial_losses)}/{len(pre_update_losses)} problems)")
+
             # Print summary
             print(f"  \033[1m\033[96m[METRICS]\033[0m")
             print(f"    Consistency     : {consistency_rate:.1%} ({num_consistent}/{num_total})")
             print(f"    Trivial problems: {already_solved}/{len(fresh_problem_info)} ({trivial_rate:.1%})")
-            print(f"    Diversity reward: {mean_diversity:.4f}")
+            print(f"    Difficulty reward (non-trivial): {mean_difficulty_non_trivial:.4f}")
             print(f"    Difficulty reward: {mean_difficulty:.4f}")
 
 

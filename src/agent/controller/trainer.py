@@ -1086,6 +1086,44 @@ class PolicyTrainer:
         
 
             loss = torch.mean(advantages ** 2).item()
-            per_problem_losses.append(loss)
+            per_problem_losses.append(loss * 100)
 
         return per_problem_losses
+    
+    def compute_per_problem_losses_step_based(
+        self,
+        per_problem_samples: List[List[dict]],
+        problem_info: List[dict],
+        failed_penalty: float = 1.0,
+    ) -> List[float]:
+        """
+        Difficulty signal based on how many steps the student used.
+
+        For solved problems: difficulty = num_steps / max_actions
+        → 0.0  trivially solved (already at goal, 0 steps)
+        → ~1.0 barely solved (budget almost exhausted)
+
+        For unsolved problems: difficulty = failed_penalty
+        Defaults to 1.0 (maximally hard), but can be tuned independently
+        to distinguish "close miss" from "solved in last step".
+
+        This gives NeSIG a clean, interpretable signal:
+        - Problems solved easily → low reward → NeSIG should make them harder
+        - Problems never solved  → high reward → these are the sweet spot
+        - Problems in the middle → intermediate reward (most useful signal)
+        """
+        result = []
+        for steps, info in zip(per_problem_samples, problem_info):
+            goal_reached = info.get('goal_reached', False)
+            num_steps    = info.get('num_steps', 0)
+            # Prefer the per-problem budget stored in info; fall back to args
+            max_actions  = info.get('max_actions', self.args.max_actions_train)
+
+            if not goal_reached:
+                result.append(failed_penalty * 20)
+            elif num_steps == 0 or max_actions == 0:
+                result.append(0.0)          # trivially solved / degenerate case
+            else:
+                result.append(min(num_steps / max_actions, 1.0) * 100)
+
+        return result
