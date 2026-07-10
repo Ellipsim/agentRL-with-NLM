@@ -151,6 +151,14 @@ def parse_arguments():
     parser.add_argument('--max-actions-train', type=int, default=None,
                         help="Action budget for student during training "
                              "(defaults to max-actions-test if not set)")
+    
+    parser.add_argument('--nesig-init-entropy-coeffs', 
+                        type=PPOPolicy.parse_entropy_coeffs, default=0.01,
+                        help="Entropy coeffs for NeSIG init policy. "
+                            "Float o 'inicial,final,pasos' para annealing.")
+    parser.add_argument('--nesig-goal-entropy-coeffs',
+                        type=PPOPolicy.parse_entropy_coeffs, default=0.01,
+                        help="Entropy coeffs for NeSIG goal policy.")
 
     # ---- Shared training ----
     parser.add_argument('--steps', type=int, default=200,
@@ -344,14 +352,14 @@ def build_nesig_components(args, device, difficulty_evaluator=None):
         init_lr=args.nesig_init_lr,
         init_PPO_epochs=args.nesig_init_ppo_epochs,
         init_epsilon=args.nesig_init_epsilon,
-        init_entropy_coeffs=0.0,
+        init_entropy_coeffs=args.nesig_init_entropy_coeffs,
         init_lifted_entropy_weight=0.5,
         # ---- goal phase PPO args ----
-        goal_term_action_prob=0.0,
+        goal_term_action_prob=0.05,
         goal_lr=args.nesig_goal_lr,
         goal_PPO_epochs=args.nesig_goal_ppo_epochs,
         goal_epsilon=args.nesig_goal_epsilon,
-        goal_entropy_coeffs=0.0,
+        goal_entropy_coeffs=args.nesig_goal_entropy_coeffs,
         goal_lifted_entropy_weight=0.5,
     )
 
@@ -827,14 +835,19 @@ def train(args, experiment_id, experiment_folder_path: Path):
             )
 
             if len(samples_k) >= args.min_samples_train:
-                # losses_k = student_trainer.compute_per_problem_losses_pre_update(
-                #     per_problem_samples_k
-                # )
-                losses_k = student_trainer.compute_per_problem_losses_step_based(
-                    per_problem_samples_k,
-                    problem_info_k,
-                    failed_penalty=1.0,   
+                losses_k = student_trainer.compute_per_problem_losses_pre_update(
+                    per_problem_samples_k
                 )
+                # losses_k = student_trainer.compute_per_problem_losses_step_based(
+                #     per_problem_samples_k,
+                #     problem_info_k,
+                #     failed_penalty=1.0,   
+                # )
+                # losses_k = student_trainer.compute_per_problem_losses_step_based_relative(
+                #     per_problem_samples_k,
+                #     problem_info_k,
+                #     failed_penalty=1.0,   
+                # )
             else:
                 losses_k = [0.0] * len(consistent_trajectories)
 

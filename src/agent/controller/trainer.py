@@ -1086,7 +1086,7 @@ class PolicyTrainer:
         
 
             loss = torch.mean(advantages ** 2).item()
-            per_problem_losses.append(loss * 100)
+            per_problem_losses.append(loss)
 
         return per_problem_losses
     
@@ -1120,10 +1120,57 @@ class PolicyTrainer:
             max_actions  = info.get('max_actions', self.args.max_actions_train)
 
             if not goal_reached:
-                result.append(failed_penalty * 20)
+                result.append(failed_penalty)
             elif num_steps == 0 or max_actions == 0:
                 result.append(0.0)          # trivially solved / degenerate case
             else:
-                result.append(min(num_steps / max_actions, 1.0) * 100)
+                result.append(min(num_steps / max_actions, 1.0))
 
         return result
+
+    def compute_per_problem_losses_step_based_relative(
+        self,
+        per_problem_samples,
+        problem_info,
+        failed_penalty=1.0,
+        recent_window=10,  # tamaño de la ventana temporal
+    ) -> List[float]:
+        # Calcular valores brutos igual que antes
+        raw_losses = []
+        for steps, info in zip(per_problem_samples, problem_info):
+            goal_reached = info.get('goal_reached', False)
+            num_steps    = info.get('num_steps', 0)
+            max_actions  = info.get('max_actions', self.args.max_actions_train)
+
+            if not goal_reached:
+                raw_losses.append(failed_penalty)
+            elif num_steps == 0 or max_actions == 0:
+                raw_losses.append(0.0)
+            else:
+                raw_losses.append(min(num_steps / max_actions, 1.0))
+
+        # Actualizar ventana histórica
+        if not hasattr(self, '_loss_history'):
+            self._loss_history = []
+        self._loss_history.extend(raw_losses)
+        self._loss_history = self._loss_history[-recent_window:]
+
+        # Normalizar respecto a la ventana
+        if len(self._loss_history) > 1:
+            mean = sum(self._loss_history) / len(self._loss_history)
+            std  = (sum((x - mean)**2 for x in self._loss_history) / len(self._loss_history))**0.5
+            std  = max(std, 1.0)
+            
+            result = []
+            non_trivial = [(r - mean) / std for r in raw_losses if r > 0.0]
+            min_val = min(non_trivial) if non_trivial else 0.0
+            
+            for r in raw_losses:
+                if r == 0.0:
+                    result.append(0.0)
+                else:
+                    result.append((r - mean) / std - min_val)
+            
+            return result
+
+        return raw_losses
