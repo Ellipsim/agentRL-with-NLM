@@ -181,6 +181,9 @@ def parse_arguments():
     parser.add_argument('--student-freeze-period', type=int, default=0,
                         help="Iterations the student trains before switching to teacher. "
                             "0 = both update every step (default).")
+    parser.add_argument('--teacher-completely-freeze', action='store_true',
+        help='Freeze the NeSIG teacher after warm-up (no PPO updates during co-training).'
+    )
 
 
     parser.add_argument('--batch-size', type=int, default=64)
@@ -746,7 +749,10 @@ def train(args, experiment_id, experiment_folder_path: Path):
         print(f"\033[1m\033[94mStep {current_step}/{args.steps}\033[0m")
 
         # Determine which agent is active this step
-        if args.teacher_freeze_period == 0 and args.student_freeze_period == 0:
+        if args.teacher_completely_freeze:
+            train_nesig = False
+            train_student = True
+        elif args.teacher_freeze_period == 0 and args.student_freeze_period == 0:
             # Default: both update every step
             train_nesig   = True
             train_student = True

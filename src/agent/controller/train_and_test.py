@@ -108,7 +108,7 @@ def parse_arguments():
         help="Action budget per training problem (int or tuple)"
     )
     parser.add_argument(
-        '--batch-size', type=int, default=32,
+        '--batch-size', type=int, default=64,
         help="Minibatch size during PPO training"
     )
     parser.add_argument(
@@ -349,6 +349,12 @@ def generate_problems(generator_path: str, out_dir: str,
             capture_output=True, text=True
         )
         if result.returncode != 0:
+            print("=== STDOUT ===")
+            print(result.stdout)
+            print("=== STDERR ===")
+            print(result.stderr)
+            print("=== RETURN CODE ===")
+            print(result.returncode)
             raise RuntimeError(f"Generator failed for problem {i + 1}: {result.stderr}")
         out_file.write_text(result.stdout)
 

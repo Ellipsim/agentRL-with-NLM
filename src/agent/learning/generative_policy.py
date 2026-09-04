@@ -193,7 +193,7 @@ class PPOSolverPolicy(GenerativePolicy):
         """
         parser.set_defaults(solve_policy="PPO")
         parser.add_argument('--solve-lr', default=1e-3, type=float, help="Learning rate")
-        parser.add_argument('--solve-PPO-epochs', default=3, type=int, help="For each PPO iteration, how many training epochs to use over the dataset of collected trajectories.")
+        parser.add_argument('--solve-PPO-epochs', default=2, type=int, help="For each PPO iteration, how many training epochs to use over the dataset of collected trajectories.")
         parser.add_argument('--solve-epsilon', default=0.2, type=float, help="Epsilon parameter used in PPO. The larger it is, the larger policy updates can be.")
         parser.add_argument('--solve-entropy-coeffs', default=0.0, type=cls.parse_entropy_coeffs, help=("Coefficients used for the PPO entropy term and annealing it."
                                                                                         "the first element is the initial value of the entropy coeff,"
