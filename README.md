@@ -1,6 +1,6 @@
 # Training Scripts — AgentRL PDDL Solver
 
-This document covers the two training scripts available for training the PPO solver policy.
+This document covers the three training scripts available for training the PPO solver policy.
 
 ---
 
@@ -10,6 +10,7 @@ This document covers the two training scripts available for training the PPO sol
 |--------|--------|-------------|
 | `train_and_test.py` | `src.agent.controller.train_and_test` | Standard training with fixed problem sets |
 | `train_and_test_ACG.py` | `src.agent.controller.train_and_test_ACG` | Automatic Curriculum Generation (ACG) with progressive difficulty |
+| `train_and_test_nesig.py` | `src.agent.controller.train_and_test_nesig` | Automatic Curriculum Generation (ACG) with progressive difficulty and NeSIG |
 
 ---
 
@@ -208,27 +209,6 @@ python -m src.agent.controller.train_and_test_NeSIG \
     --nesig-lr 1e-2 \
     --diversity-threshold 0.25
 ```
-
----
-
-## Offline Per-Level Evaluation
-
-When training with `--save-level-checkpoints`, you can run a full per-level evaluation after training without slowing down the training run:
-
-```bash
-python -m src.scripts.evaluate_policy_per_level \
-    --experiment-id <id> \
-    --domain-path data/domains/blocksworld.pddl \
-    --num-problems-per-level 50
-```
-
-This will discover all saved level-advance checkpoints, evaluate each one across all difficulty levels, and produce:
-- One JSON + three-panel plot per checkpoint
-- A single combined `all_advance_evals.png` showing success rate progression across all curriculum advances
-
-Use `--force-reeval` to re-evaluate checkpoints that already have saved results.
-
----
 
 ## Experiment Management
 
